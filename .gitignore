@@ -1,0 +1,5 @@
+dataset/
+dataset/*.zip
+*.pth
+.idea
+.vscode

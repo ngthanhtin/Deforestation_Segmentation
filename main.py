@@ -19,24 +19,105 @@ import albumentations as A
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
+from warmup_scheduler import GradualWarmupScheduler
+
 import warnings
 warnings.filterwarnings("ignore")
 
 # %%
+def set_seed(seed=None, cudnn_deterministic=True):
+    if seed is None:
+        seed = 42
 
-def Augment(mode):
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = cudnn_deterministic
+    torch.backends.cudnn.benchmark = False
+
+# %%
+class GradualWarmupSchedulerV2(GradualWarmupScheduler):
+    """
+    https://www.kaggle.com/code/underwearfitting/single-fold-training-of-resnet200d-lb0-965
+    """
+    def __init__(self, optimizer, multiplier, total_epoch, after_scheduler=None):
+        super(GradualWarmupSchedulerV2, self).__init__(
+            optimizer, multiplier, total_epoch, after_scheduler)
+
+    def get_lr(self):
+        if self.last_epoch > self.total_epoch:
+            if self.after_scheduler:
+                if not self.finished:
+                    self.after_scheduler.base_lrs = [
+                        base_lr * self.multiplier for base_lr in self.base_lrs]
+                    self.finished = True
+                return self.after_scheduler.get_lr()
+            return [base_lr * self.multiplier for base_lr in self.base_lrs]
+        if self.multiplier == 1.0:
+            return [base_lr * (float(self.last_epoch) / self.total_epoch) for base_lr in self.base_lrs]
+        else:
+            return [base_lr * ((self.multiplier - 1.) * self.last_epoch / self.total_epoch + 1.) for base_lr in self.base_lrs]
+
+def get_scheduler(cfg, optimizer):
+    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, cfg.epochs, eta_min=1e-7)
+    scheduler = GradualWarmupSchedulerV2(
+        optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
+
+    return scheduler
+
+# %%
+# Config
+class CFG:
+    encoder_name   = 'efficientnet-b6'
+
+    ensemble       = False
+    img_size       = 320
+    scheduler      = 'CosineAnnealingWarmRestarts'
+    epochs         = 10
+    init_lr        = 0.0005
+    min_lr         = 1e-6
+    batch_size     = 8
+    weight_decay   = 1e-6
     
+    seed           = 42
+    n_fold         = 4
+    trn_fold       = [2]
+
+    num_class      = 4
+    prev_model     =  './weights.pth'
+
+    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
+
+# %%
+def Augment(mode):
     if mode == "train":
-        return A.Compose([A.RandomContrast( p=0.2),
+        return A.Compose([ # A.Resize(CFG.img_size, CFG.img_size),
+                          A.RandomContrast( p=0.2),
                           A.RandomGamma(p=0.2),
                           A.RandomBrightness(p=0.2),
+                        #   A.ShiftScaleRotate(p=0.75), #
+                        #   A.OneOf([ #
+                        #     A.GaussNoise(var_limit=[10, 50]),
+                        #     A.GaussianBlur(),
+                        #     A.MotionBlur(),
+                        #     ], p=0.4),
+                        #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
+                        #   A.CoarseDropout(max_holes=1, max_width=int(CFG.img_size * 0.3), max_height=int(CFG.img_size * 0.3), 
+                        #             mask_fill_value=0, p=0.5), #
+                          #A.Cutout(max_h_size=int(CFG.img_size * 0.6),
+                        #          max_w_size=int(CFG.img_size * 0.6), num_holes=1, p=1.0),
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
                           A.HorizontalFlip(p=0.5),
                           A.VerticalFlip(p=0.5)],
                          additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
     
     else: # valid test
-        return A.Compose([A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))],
+        return A.Compose([ # A.Resize(CFG.img_size, CFG.img_size), 
+                          A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))],
                          additional_targets={'image2': 'image'})
 
 class FOREST(Dataset):
@@ -55,6 +136,7 @@ class FOREST(Dataset):
         self.infrared_folder = infrared_folder
         self.mask_folder     = mask_folder    
         self.augment         = Augment(mode)
+        self.augment2        = Augment('valid')
         self.mask_dict       = {"plantation"             : 1,
                                 "grassland shrubland"    : 2,
                                 "smallholder agriculture": 3,
@@ -77,9 +159,14 @@ class FOREST(Dataset):
         mask[mask == 1.] = label
         
         #augment mask and image
-        visible, infrared, mask = self.augment(image  = visible,
-                                               image2 = infrared,
-                                               mask   = mask).values()
+        if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
+            visible, infrared, mask = self.augment(image  = visible,
+                                                image2 = infrared,
+                                                mask   = mask).values()
+        else:
+            visible, infrared, mask = self.augment2(image  = visible,
+                                                image2 = infrared,
+                                                mask   = mask).values()
         
         # concat visible and infared and a single 5-channel image
         image = np.concatenate((visible, infrared), axis = -1)
@@ -136,20 +223,16 @@ for i in range(600,605):
     show_image(visible, mask = mask)
     plt.show()
 
-# %%
-# Config
-device = 'cuda:7'
-init_lr  = 0.001
-num_class = 5
+
 # %%
 # load models
-model = smp.Unet(encoder_name    = "resnet101", # I choose small model here. try different encoders for better result!
+model = smp.Unet(encoder_name    = CFG.encoder_name, # resnet101
                  encoder_weights = "imagenet",
                  in_channels     = 3+3,
-                 classes         = 4+1).to(device)
+                 classes         = CFG.num_class+1).to(CFG.device)
 
 # load model
-model.load_state_dict(torch.load("./weights.pth"))
+# model.load_state_dict(torch.load("./weights.pth"))
 
 # %%
 def dice_loss(logits, true, eps=1e-7):
@@ -205,16 +288,16 @@ def hard_dice(pred, mask, label):
 
 # %%
 loss_fn = dice_loss
-# optimizer = optim.Adam(model.parameters(), lr=0.0005)
-optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr = init_lr, momentum=0.9, weight_decay=0.0001)
+# optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
+optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # learning rate scheduler
-lambda1 = lambda epoch: 0.8 ** epoch
-scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda1)
+scheduler = get_scheduler(CFG, optimizer)
 
 # %%
 def train(trainloader, validloader, model,
           n_epoch = 10):
-    
+    set_seed(CFG.seed)
+
     for epoch in range(n_epoch):
         print("")
         model.train()
@@ -232,8 +315,8 @@ def train_epoch(trainloader, model):
     losses = []
     for (inputs, targets, *_) in trainloader:
         # forward pass       
-        outputs = model(inputs.permute(0,-1,1,2).to(device)) # channel first
-        targets = targets.long().to(device)
+        outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
+        targets = targets.long().to(CFG.device)
 
         # calculate loss
         loss = loss_fn(outputs, targets)
@@ -253,7 +336,7 @@ def evaluate_epoch(validloader, model):
     scores = []
     for (inputs, targets, label, _) in validloader:
         
-        outputs = model(inputs.permute(0,-1,1,2).to(device)).detach().cpu() #channel first
+        outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
         targets = targets.long()
                         
         #calculate dice
@@ -275,7 +358,7 @@ valid_dataset = FOREST(visible_folder, infrared_folder, mask_folder, label_file,
                        mode = "valid")
 
 train_loader = DataLoader(train_dataset,
-                          batch_size  = 16,
+                          batch_size  = CFG.batch_size,
                           num_workers = 14,
                           shuffle     = True, 
                           pin_memory  = True)
@@ -287,11 +370,11 @@ valid_loader = DataLoader(train_dataset,
                           pin_memory  = False)
 
 model = train(train_loader, valid_loader, model,
-              n_epoch = 10)
+              n_epoch = CFG.epochs)
 
 # %%
 # save model
-torch.save(model.state_dict(), "./weights_2.pth")
+torch.save(model.state_dict(), "./weights_efficientnetb6_augment_more_no_resize.pth")
 
 
 
@@ -317,7 +400,7 @@ def predict(model, loader):
     for (inputs, _, label, image_id) in loader:
         
         # forward pass       
-        pred = model(inputs.permute(0,-1,1,2).to(device)) # channel first
+        pred = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
 
         # move back to cpu
         pred     = pred.detach().cpu()
@@ -354,4 +437,5 @@ test_results = predict(model, test_loader)
 
 df_submission = pd.DataFrame.from_dict(test_results)
 
-df_submission.to_csv("my_submission.csv", index = False)
+df_submission.to_csv("my_submission_2.csv", index = False)
+# %%

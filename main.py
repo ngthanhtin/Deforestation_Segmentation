@@ -62,30 +62,36 @@ class GradualWarmupSchedulerV2(GradualWarmupScheduler):
             return [base_lr * ((self.multiplier - 1.) * self.last_epoch / self.total_epoch + 1.) for base_lr in self.base_lrs]
 
 def get_scheduler(cfg, optimizer):
-    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, cfg.epochs, eta_min=1e-7)
-    scheduler = GradualWarmupSchedulerV2(
-        optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
-
+    scheduler = None
+    if cfg.scheduler == 'CosineAnnealingLR':
+        scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, cfg.epochs, eta_min=1e-7)
+        scheduler = GradualWarmupSchedulerV2(
+            optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
+    elif cfg.scheduler == 'CosineAnnealingWarmRestarts':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,T_0=cfg.T_0, 
+                                                             eta_min=cfg.min_lr)
     return scheduler
 
 # %%
 # Config
 class CFG:
-    encoder_name   = 'efficientnet-b6'
+    encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008
+    seg_model_name = 'UNetPlusPlus' # UNetPlusPlus
 
     ensemble       = False
     img_size       = 320
-    scheduler      = 'CosineAnnealingWarmRestarts'
+    scheduler      = "CosineAnnealingLR" #'CosineAnnealingWarmRestarts'
     epochs         = 10
     init_lr        = 0.0005
     min_lr         = 1e-6
+    T_0            = 25
     batch_size     = 8
     weight_decay   = 1e-6
     
     seed           = 42
     n_fold         = 4
-    trn_fold       = [2]
+    trn_fold       = [0]
 
     num_class      = 4
     prev_model     =  './weights.pth'
@@ -106,6 +112,7 @@ def Augment(mode):
                         #     A.MotionBlur(),
                         #     ], p=0.4),
                         #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
+                        #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
                         #   A.CoarseDropout(max_holes=1, max_width=int(CFG.img_size * 0.3), max_height=int(CFG.img_size * 0.3), 
                         #             mask_fill_value=0, p=0.5), #
                           #A.Cutout(max_h_size=int(CFG.img_size * 0.6),
@@ -226,11 +233,17 @@ for i in range(600,605):
 
 # %%
 # load models
-model = smp.Unet(encoder_name    = CFG.encoder_name, # resnet101
-                 encoder_weights = "imagenet",
-                 in_channels     = 3+3,
-                 classes         = CFG.num_class+1).to(CFG.device)
-
+if CFG.seg_model_name == "UNet":
+    model = smp.Unet(encoder_name    = CFG.encoder_name,
+                    encoder_weights = "imagenet",
+                    in_channels     = 3+3,
+                    classes         = CFG.num_class+1).to(CFG.device)
+elif CFG.seg_model_name == "UNetPlusPlus":
+    model = smp.UnetPlusPlus(
+            encoder_name=CFG.encoder_name,      
+            encoder_weights="imagenet",     
+            in_channels=3+3,                  
+            classes=CFG.num_class+1,).to(CFG.device)
 # load model
 # model.load_state_dict(torch.load("./weights.pth"))
 
@@ -286,8 +299,16 @@ def hard_dice(pred, mask, label):
     
     return np.array(score)
 
+# BCELoss = smp.losses.SoftBCEWithLogitsLoss()
+
+# alpha = 0.5
+# beta = 1 - alpha
+# TverskyLoss = smp.losses.TverskyLoss(
+#     mode='binary', log_loss=False, alpha=alpha, beta=beta)
+
 # %%
 loss_fn = dice_loss
+CFG.init_lr = 0.0001
 # optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
 optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # learning rate scheduler
@@ -297,7 +318,8 @@ scheduler = get_scheduler(CFG, optimizer)
 def train(trainloader, validloader, model,
           n_epoch = 10):
     set_seed(CFG.seed)
-
+    
+    best_valid_dice = 0.
     for epoch in range(n_epoch):
         print("")
         model.train()
@@ -305,14 +327,19 @@ def train(trainloader, validloader, model,
         print(f"Epoch {epoch}/{n_epoch}, Train Loss: {train_loss}")
         
         with torch.no_grad():    
-            valid_dice = evaluate_epoch(validloader, model)     
-            print(f"Epoch {epoch}/{n_epoch}, Valid Dice: {valid_dice}")
+            valid_loss, valid_dice = evaluate_epoch(validloader, model)     
+            print(f"Epoch {epoch}/{n_epoch}, Valid Loss: {valid_loss}, Valid Dice: {valid_dice}")
+            # save model
+            if best_valid_dice <= valid_dice:
+                torch.save(model.state_dict(), "./weights_dice.pth")
         
     return model
 
 def train_epoch(trainloader, model):
         
     losses = []
+    iters = len(trainloader)
+    
     for (inputs, targets, *_) in trainloader:
         # forward pass       
         outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
@@ -325,7 +352,7 @@ def train_epoch(trainloader, model):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        scheduler.step()
+        scheduler.step() # epoch + i / iters for WarmRestarts
 
         losses.append(loss.item())
     
@@ -334,17 +361,20 @@ def train_epoch(trainloader, model):
 def evaluate_epoch(validloader, model):
     
     scores = []
+    loss = []
     for (inputs, targets, label, _) in validloader:
         
         outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
         targets = targets.long()
-                        
+        
+        val_loss = loss_fn(outputs, targets)
         #calculate dice
         score = hard_dice(outputs, targets, label)
         
+        loss.append(val_loss.item())
         scores.append(score)
-        
-    return np.mean(scores)
+    
+    return np.mean(loss), np.mean(scores)
 
 # %%
 visible_folder  = "./dataset/processed/visibles/"
@@ -371,13 +401,6 @@ valid_loader = DataLoader(train_dataset,
 
 model = train(train_loader, valid_loader, model,
               n_epoch = CFG.epochs)
-
-# %%
-# save model
-torch.save(model.state_dict(), "./weights_efficientnetb6_augment_more_no_resize.pth")
-
-
-
 
 # %%
 # Submission

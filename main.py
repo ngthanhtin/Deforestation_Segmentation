@@ -109,17 +109,16 @@ def Augment(mode):
                           A.RandomCrop(CFG.img_size, CFG.img_size, p=0.2),
                           A.Rotate(limit=30, interpolation=1, border_mode=4, value=None, mask_value=None, always_apply=False, p=0.2),
                         #   A.ShiftScaleRotate(p=0.2), #
-                        #   A.OneOf([ #
-                        #     A.GaussNoise(var_limit=[10, 50]),
-                        #     A.GaussianBlur(),
-                        #     A.MotionBlur(),
-                        #     ], p=0.4),
+                          A.OneOf([ #
+                            A.GaussNoise(var_limit=0.1),
+                            A.GaussianBlur(),
+                            # A.MotionBlur(),
+                            ], p=0.2),
                         #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
-                        #   A.CoarseDropout(max_holes=1, max_width=int(CFG.img_size * 0.3), max_height=int(CFG.img_size * 0.3), 
-                        #             mask_fill_value=0, p=0.5), #
-                          #A.Cutout(max_h_size=int(CFG.img_size * 0.6),
-                        #          max_w_size=int(CFG.img_size * 0.6), num_holes=1, p=1.0),
+                        #   A.CoarseDropout(max_holes=8, max_width=20, \
+                        #  max_height=20, mask_fill_value=1, p=0.2), #
+                          #A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
                           A.HorizontalFlip(p=0.5),
                           A.VerticalFlip(p=0.5)],
@@ -169,14 +168,14 @@ class FOREST(Dataset):
         mask[mask == 1.] = label
         
         #augment mask and image
-        if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
-            visible, infrared, mask = self.augment(image  = visible,
-                                                image2 = infrared,
-                                                mask   = mask).values()
-        else:
-            visible, infrared, mask = self.augment2(image  = visible,
-                                                image2 = infrared,
-                                                mask   = mask).values()
+        # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
+        visible, infrared, mask = self.augment(image  = visible,
+                                            image2 = infrared,
+                                            mask   = mask).values()
+        # else:
+        #     visible, infrared, mask = self.augment2(image  = visible,
+        #                                         image2 = infrared,
+        #                                         mask   = mask).values()
         
         # concat visible and infared and a single 5-channel image
         image = np.concatenate((visible, infrared), axis = -1)
@@ -303,6 +302,7 @@ def hard_dice(pred, mask, label):
     return np.array(score)
 
 # BCELoss = smp.losses.SoftBCEWithLogitsLoss()
+# loss_fn = torch.nn.BCEWithLogitsLoss()
 
 # alpha = 0.5
 # beta = 1 - alpha

@@ -76,8 +76,8 @@ def get_scheduler(cfg, optimizer):
 # %%
 # Config
 class CFG:
-    encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008
-    seg_model_name = 'UNetPlusPlus' # UNetPlusPlus
+    encoder_name   = 'efficientnet-b0' # resnet101, efficientnet-b6, timm-regnety_008
+    seg_model_name = 'UNet' # UNetPlusPlus
 
     ensemble       = False
     img_size       = 320
@@ -86,7 +86,7 @@ class CFG:
     init_lr        = 0.0005
     min_lr         = 1e-6
     T_0            = 25
-    batch_size     = 8
+    batch_size     = 16
     weight_decay   = 1e-6
     
     seed           = 42
@@ -94,18 +94,21 @@ class CFG:
     trn_fold       = [0]
 
     num_class      = 4
-    prev_model     =  './weights.pth'
+    save_weight_path     =  f'weights_dice_{encoder_name}.pth'
 
     device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
 
+set_seed(CFG.seed)
 # %%
 def Augment(mode):
     if mode == "train":
-        return A.Compose([ # A.Resize(CFG.img_size, CFG.img_size),
+        return A.Compose([# A.Resize(CFG.img_size, CFG.img_size),
                           A.RandomContrast( p=0.2),
                           A.RandomGamma(p=0.2),
                           A.RandomBrightness(p=0.2),
-                        #   A.ShiftScaleRotate(p=0.75), #
+                          A.RandomCrop(CFG.img_size, CFG.img_size, p=0.2),
+                          A.Rotate(limit=30, interpolation=1, border_mode=4, value=None, mask_value=None, always_apply=False, p=0.2),
+                        #   A.ShiftScaleRotate(p=0.2), #
                         #   A.OneOf([ #
                         #     A.GaussNoise(var_limit=[10, 50]),
                         #     A.GaussianBlur(),
@@ -123,7 +126,7 @@ def Augment(mode):
                          additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
     
     else: # valid test
-        return A.Compose([ # A.Resize(CFG.img_size, CFG.img_size), 
+        return A.Compose([# A.Resize(CFG.img_size, CFG.img_size), 
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))],
                          additional_targets={'image2': 'image'})
 
@@ -227,8 +230,8 @@ for i in range(600,605):
     
     visible = image[..., :3]
     
-    show_image(visible, mask = mask)
-    plt.show()
+    # show_image(visible, mask = mask)
+    # plt.show()
 
 
 # %%
@@ -263,7 +266,7 @@ def dice_loss(logits, true, eps=1e-7):
     """
     true = true.unsqueeze(1)
     num_classes = logits.shape[1]
-    device = f"cuda:{true.get_device()}"
+    device = 'cpu' if true.get_device() == -1 else f"cuda:{true.get_device()}"
     
     if num_classes == 1:
         true_1_hot = torch.eye(num_classes + 1).to(device)
@@ -308,16 +311,15 @@ def hard_dice(pred, mask, label):
 
 # %%
 loss_fn = dice_loss
-CFG.init_lr = 0.0001
-# optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
-optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
+CFG.init_lr = 0.0005
+optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
+# optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # learning rate scheduler
 scheduler = get_scheduler(CFG, optimizer)
 
 # %%
 def train(trainloader, validloader, model,
           n_epoch = 10):
-    set_seed(CFG.seed)
     
     best_valid_dice = 0.
     for epoch in range(n_epoch):
@@ -331,7 +333,9 @@ def train(trainloader, validloader, model,
             print(f"Epoch {epoch}/{n_epoch}, Valid Loss: {valid_loss}, Valid Dice: {valid_dice}")
             # save model
             if best_valid_dice <= valid_dice:
-                torch.save(model.state_dict(), "./weights_dice.pth")
+                print("Saving...")
+                best_valid_dice = valid_dice
+                torch.save(model.state_dict(), f"./{CFG.save_weight_path}")
         
     return model
 
@@ -455,10 +459,12 @@ test_loader = DataLoader(test_dataset,
                          shuffle     = False,
                          pin_memory  = False)
 
-    
+# load model
+model.load_state_dict(torch.load("./weights_dice_efficientnet-b0_286.pth"))
+
 test_results = predict(model, test_loader)
 
 df_submission = pd.DataFrame.from_dict(test_results)
 
-df_submission.to_csv("my_submission_2.csv", index = False)
+df_submission.to_csv("my_submission.csv", index = False)
 # %%

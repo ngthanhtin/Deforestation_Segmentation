@@ -15,6 +15,7 @@ from torch.utils.data import Dataset, DataLoader
 
 import segmentation_models_pytorch as smp
 import albumentations as A
+import timm
 
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
@@ -63,7 +64,9 @@ class GradualWarmupSchedulerV2(GradualWarmupScheduler):
 
 def get_scheduler(cfg, optimizer):
     scheduler = None
-    if cfg.scheduler == 'CosineAnnealingLR':
+    if cfg.scheduler == 'ReduceLROnPlateau':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=1e-7, eps=1e-08)
+    elif cfg.scheduler == 'CosineAnnealingLR':
         scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, cfg.epochs, eta_min=1e-7)
         scheduler = GradualWarmupSchedulerV2(
@@ -76,12 +79,12 @@ def get_scheduler(cfg, optimizer):
 # %%
 # Config
 class CFG:
-    encoder_name   = 'efficientnet-b0' # resnet101, efficientnet-b6, timm-regnety_008
+    encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008
     seg_model_name = 'UNet' # UNetPlusPlus
 
     ensemble       = False
     img_size       = 320
-    scheduler      = "CosineAnnealingLR" #'CosineAnnealingWarmRestarts'
+    scheduler      = "CosineAnnealingLR" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
     epochs         = 10
     init_lr        = 0.0005
     min_lr         = 1e-6
@@ -102,32 +105,32 @@ set_seed(CFG.seed)
 # %%
 def Augment(mode):
     if mode == "train":
+    
         return A.Compose([# A.Resize(CFG.img_size, CFG.img_size),
-                          A.RandomContrast( p=0.2),
-                          A.RandomGamma(p=0.2),
-                          A.RandomBrightness(p=0.2),
-                          A.RandomCrop(CFG.img_size, CFG.img_size, p=0.2),
-                          A.Rotate(limit=30, interpolation=1, border_mode=4, value=None, mask_value=None, always_apply=False, p=0.2),
-                        #   A.ShiftScaleRotate(p=0.2), #
+                          A.RandomRotate90(p=0.2),
+                          A.HorizontalFlip(p=0.5),
+                          A.VerticalFlip(p=0.5),
+                          A.ShiftScaleRotate(shift_limit=0, scale_limit=(-0.2,0.2), rotate_limit=(-30,30), 
+                         interpolation=1, border_mode=0, value=(0,0,0), p=0.2), #
                           A.OneOf([ #
-                            A.GaussNoise(var_limit=0.1),
-                            A.GaussianBlur(),
-                            # A.MotionBlur(),
+                            A.GaussNoise(var_limit=(0,50.0), mean=0, p=0.5),
+                            A.GaussianBlur(blur_limit=(3,7), p=0.5),
                             ], p=0.2),
+                          A.RandomBrightnessContrast(brightness_limit=0.35, contrast_limit=0.5, 
+                                 brightness_by_max=True,p=0.5),
+                          A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=30, 
+                           val_shift_limit=0, p=0.5),
                         #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
-                        #   A.CoarseDropout(max_holes=8, max_width=20, \
-                        #  max_height=20, mask_fill_value=1, p=0.2), #
-                          #A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
+                        #   A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
-                          A.HorizontalFlip(p=0.5),
-                          A.VerticalFlip(p=0.5)],
-                         additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
+                          ],)
+                         #additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
     
     else: # valid test
         return A.Compose([# A.Resize(CFG.img_size, CFG.img_size), 
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))],
-                         additional_targets={'image2': 'image'})
+                         )#additional_targets={'image2': 'image'})
 
 class FOREST(Dataset):
     def __init__(self,
@@ -169,8 +172,8 @@ class FOREST(Dataset):
         
         #augment mask and image
         # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
-        visible, infrared, mask = self.augment(image  = visible,
-                                            image2 = infrared,
+        visible, mask = self.augment(image  = visible,
+                                            # image2 = infrared,
                                             mask   = mask).values()
         # else:
         #     visible, infrared, mask = self.augment2(image  = visible,
@@ -178,7 +181,8 @@ class FOREST(Dataset):
         #                                         mask   = mask).values()
         
         # concat visible and infared and a single 5-channel image
-        image = np.concatenate((visible, infrared), axis = -1)
+        # image = np.concatenate((visible, infrared), axis = -1)
+        image = visible
         
         return torch.tensor(image), torch.tensor(mask), label, case_id
 
@@ -229,16 +233,178 @@ for i in range(600,605):
     
     visible = image[..., :3]
     
-    # show_image(visible, mask = mask)
-    # plt.show()
+    show_image(visible, mask = mask)
+    plt.show()
+
+# %%
+# ResNet Attention
+
+class DecoderBlock(nn.Module):
+    def __init__(self, in_channels, n_filters, is_deconv=False, scale=True):
+        super().__init__()
+
+        # B, C, H, W -> B, C/4, H, W
+        self.conv1 = nn.Conv2d(in_channels, in_channels // 4, 1)
+        self.norm1 = nn.BatchNorm2d(in_channels // 4)
+        nonlinearity = nn.ReLU
+        self.relu1 = nonlinearity(inplace=True)
+
+        if scale:
+            # B, C/4, H, W -> B, C/4, H, W
+            if is_deconv:
+                self.upscale = nn.ConvTranspose2d(in_channels // 4, in_channels // 4, 3,
+                                                  stride=2, padding=1, output_padding=1)
+            else:
+                self.upscale = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        else:
+            self.upscale = nn.Conv2d(in_channels // 4, in_channels // 4, 3, padding=1)
+        self.norm2 = nn.BatchNorm2d(in_channels // 4)
+        self.relu2 = nonlinearity(inplace=True)
+
+        # B, C/4, H, W -> B, C, H, W
+        self.conv3 = nn.Conv2d(in_channels // 4, n_filters, 1)
+        self.norm3 = nn.BatchNorm2d(n_filters)
+        self.relu3 = nonlinearity(inplace=True)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.relu1(x)
+        x = self.upscale(x)
+        x = self.norm2(x)
+        x = self.relu2(x)
+        x = self.conv3(x)
+        x = self.norm3(x)
+        x = self.relu3(x)
+        return x
+
+class Attention_block(nn.Module):
+    def __init__(self,F_g,F_l,F_int):
+        super(Attention_block,self).__init__()
+        self.W_g = nn.Sequential(
+            nn.Conv2d(F_g, F_int, kernel_size=1,stride=1,padding=0,bias=True),
+            nn.BatchNorm2d(F_int)
+            )
+        
+        self.W_x = nn.Sequential(
+            nn.Conv2d(F_l, F_int, kernel_size=1,stride=1,padding=0,bias=True),
+            nn.BatchNorm2d(F_int)
+        )
+
+        self.psi = nn.Sequential(
+            nn.Conv2d(F_int, 1, kernel_size=1,stride=1,padding=0,bias=True),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
+        
+        self.relu = nn.ReLU(inplace=True)
+        
+    def forward(self,g,x):
+        g1 = self.W_g(g)
+        x1 = self.W_x(x)
+        psi = self.relu(g1+x1)
+        psi = self.psi(psi)
+
+        return x*psi
+
+class conv_block(nn.Module):
+    def __init__(self,ch_in,ch_out):
+        super(conv_block,self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(ch_in, ch_out, kernel_size=3,stride=1,padding=1,bias=True),
+            nn.BatchNorm2d(ch_out),
+            nn.ReLU(inplace=True),
+        )
+    def forward(self,x):
+        x = self.conv(x)
+        return x
 
 
+
+class Resnest(nn.Module):
+
+    def __init__(self, model_name, out_neurons=600):
+        super().__init__()
+        try:
+            self.backbone = timm.create_model(model_name, pretrained=True)
+        except:
+            self.backbone = torch.hub.load('zhanghang1989/ResNeSt', model_name, pretrained=True)
+            
+        self.in_features = 2048
+        
+    def forward(self, x):
+        x = self.backbone.conv1(x)
+        x = self.backbone.bn1(x)
+        try:
+            x = self.backbone.act1(x)
+        except:
+            x = self.backbone.relu(x)
+        x = self.backbone.maxpool(x)
+
+        layer1 = self.backbone.layer1(x)
+        layer2 = self.backbone.layer2(layer1)
+        layer3 = self.backbone.layer3(layer2)
+
+        return x, layer1, layer2, layer3
+
+class ResnestDecoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        nonlinearity = nn.ReLU
+        self.decode1 = DecoderBlock(1024, 512)
+        self.decode2 = DecoderBlock(512, 256)
+        self.decode3 = DecoderBlock(256, 64)
+        self.decode4 = DecoderBlock(64, 32)
+        self.decode5 = DecoderBlock(32, 16)
+        self.conv1 = conv_block(1024, 512)
+        self.conv2 = conv_block(512, 256)
+        self.conv3 = conv_block(128, 64)
+        self.Att1 = Attention_block(512, 512, 256)
+        self.Att2 = Attention_block(256, 256, 64)
+        self.Att3 = Attention_block(64, 64, 32)
+        self.Att4 = Attention_block(64, 64, 32)
+        self.conv4 = nn.Conv2d(64, 64, 3, 2, 1)
+        self.finalconv2 = nn.Conv2d(16, 4, 3, padding=1)
+        self.finalrelu2 = nonlinearity(inplace=True)
+        self.finalconv3 = nn.Conv2d(4, 1, 3, padding=1)
+    
+    def forward(self, x, l1, l2, l3):
+        d1 = self.decode1(l3)
+        l2 = self.Att1(d1, l2)
+        d1 = torch.cat((l2,d1),dim=1)
+        d1 = self.conv1(d1)
+        d2 = self.decode2(d1)
+        l1 = self.Att2(d2, l1)
+        d2 = torch.cat((l1,d2),dim=1)
+        d2 = self.conv2(d2)
+        d3 = self.decode3(d2)
+        d3 = self.conv4(d3)
+        x = self.Att3(d3, x)
+        d3 = torch.cat((x,d3),dim=1)
+        d3 = self.conv3(d3)
+        d4 = self.decode4(d3)
+        d5 = self.decode5(d4)
+        out = self.finalconv2(d5)
+        out = self.finalrelu2(out)
+        out = self.finalconv3(out)
+        return out
+
+class resUnest(nn.Module):
+    def __init__(self, encoder_model):
+        super().__init__()
+        self.resnest = Resnest(model_name=encoder_model)
+        self.decoder = ResnestDecoder()
+        
+    def forward(self, x):
+        x, l1, l2, l3 = self.resnest(x)
+        out = self.decoder(x, l1, l2, l3)
+        return out
 # %%
 # load models
 if CFG.seg_model_name == "UNet":
     model = smp.Unet(encoder_name    = CFG.encoder_name,
                     encoder_weights = "imagenet",
-                    in_channels     = 3+3,
+                    in_channels     = 3,
                     classes         = CFG.num_class+1).to(CFG.device)
 elif CFG.seg_model_name == "UNetPlusPlus":
     model = smp.UnetPlusPlus(
@@ -290,30 +456,30 @@ def dice_loss(logits, true, eps=1e-7):
     return (1 - dice_loss)
 
 # hard dice score for vadiation set evaluation
-def hard_dice(pred, mask, label):
+def hard_dice(pred, mask, label, eps=1e-7):
 
     #pick the channel that coressponds to the true label
     pred = (torch.argmax(pred, dim = 1) == label).long().view(-1)        
     mask = mask.view(-1)
 
     # compute hard dice score for the foreground region
-    score = (torch.sum(pred * mask)*2)/ (torch.sum(pred) + torch.sum(mask))    
+    score = (torch.sum(pred * mask)*2)/ (torch.sum(pred) + torch.sum(mask) + eps)    
     
     return np.array(score)
 
-# BCELoss = smp.losses.SoftBCEWithLogitsLoss()
-# loss_fn = torch.nn.BCEWithLogitsLoss()
-
-# alpha = 0.5
-# beta = 1 - alpha
-# TverskyLoss = smp.losses.TverskyLoss(
-#     mode='binary', log_loss=False, alpha=alpha, beta=beta)
-
+alpha = 0.3
+beta = 1 - alpha
+TverskyLoss = smp.losses.TverskyLoss(mode='multiclass', log_loss=False, alpha=alpha, beta=beta)
+DiceLoss    = smp.losses.DiceLoss(mode='multiclass')
+CELoss     = smp.losses.SoftCrossEntropyLoss()
+LovaszLoss  = smp.losses.LovaszLoss(mode='multiclass', per_image=False)
+# def criterion(y_pred, y_true):
+#     return 0.5*CELoss(y_pred, y_true) + 0.5*TverskyLoss(y_pred, y_true)
 # %%
-loss_fn = dice_loss
+loss_fn = TverskyLoss
 CFG.init_lr = 0.0005
-optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
-# optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
+# optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
+optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # learning rate scheduler
 scheduler = get_scheduler(CFG, optimizer)
 
@@ -356,7 +522,13 @@ def train_epoch(trainloader, model):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        scheduler.step() # epoch + i / iters for WarmRestarts
+        
+        match CFG.scheduler:
+            case 'ReduceLROnPlateau':
+                scheduler.step(loss) # 
+            case 'CosineAnnealingLR': # CosineAnnealingWarmRestarts
+                scheduler.step()
+
 
         losses.append(loss.item())
     
@@ -403,6 +575,8 @@ valid_loader = DataLoader(train_dataset,
                           shuffle     = False,
                           pin_memory  = False)
 
+# %%
+# Train
 model = train(train_loader, valid_loader, model,
               n_epoch = CFG.epochs)
 
@@ -460,7 +634,7 @@ test_loader = DataLoader(test_dataset,
                          pin_memory  = False)
 
 # load model
-model.load_state_dict(torch.load("./weights_dice_efficientnet-b0_286.pth"))
+model.load_state_dict(torch.load("./weights_dice_resnet101.pth"))
 
 test_results = predict(model, test_loader)
 

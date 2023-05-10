@@ -3,3 +3,5 @@ dataset/*.zip
 *.pth
 .idea
 .vscode
+*.csv
+__pycache__/

@@ -15,6 +15,8 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import KFold
 
 import segmentation_models_pytorch as smp
+from segmentation_models_pytorch.encoders import get_preprocessing_fn
+
 import albumentations as A
 import timm
 
@@ -69,8 +71,12 @@ def get_scheduler(cfg, optimizer):
     if cfg.scheduler == 'ReduceLROnPlateau':
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=1e-7, eps=1e-08)
     elif cfg.scheduler == 'CosineAnnealingLR':
-        scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, cfg.epochs, eta_min=1e-7)
+        scheduler_cosine =torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 
+                                         T_0 = CFG.epochs, 
+                                         T_mult=1, 
+                                         eta_min=1e-7, 
+                                         last_epoch=-1, 
+                                         verbose=False)
         scheduler = GradualWarmupSchedulerV2(
             optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
     elif cfg.scheduler == 'CosineAnnealingWarmRestarts':
@@ -85,7 +91,7 @@ class CFG:
     seg_model_name = 'UNetPlusPlus' # UNetPlusPlus, UIUNet, UNet
 
     ensemble       = False
-    use_vi_inf     = False
+    use_vi_inf     = True
     img_size       = 320
     scheduler      = "CosineAnnealingWarmRestarts" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
     epochs         = 10
@@ -99,12 +105,16 @@ class CFG:
     n_fold         = 4
     train_fold     = [0]
 
-    num_class      = 4
+    num_class      = 4 # 4
     save_weight_path     =  f'weights_dice_{encoder_name}.pth'
 
     device         = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
+
+preprocessing_fn = lambda image : get_preprocessing_fn(encoder_name = CFG.encoder_name,
+                                                       pretrained = 'imagenet')
+preprocessing_fn = None
 # %%
 def Augment(mode):
     if mode == "train":
@@ -148,6 +158,7 @@ class FOREST(Dataset):
                  infrared_folder,
                  mask_folder, 
                  label_file,
+                 preprocess_input=None,
                  mode = "train" # train | valid | test
                 ):
         
@@ -157,6 +168,7 @@ class FOREST(Dataset):
         self.visible_folder  = visible_folder
         self.infrared_folder = infrared_folder
         self.mask_folder     = mask_folder    
+        self.preprocess_input = preprocess_input
         self.augment         = Augment(mode)
         self.augment2        = Augment('valid')
         self.mask_dict       = {"plantation"             : 1,
@@ -186,10 +198,15 @@ class FOREST(Dataset):
             visible, infrared, mask = self.augment(image  = visible,
                                                 image2 = infrared,
                                                 mask   = mask).values()
+            if self.preprocess_input:
+                visible = self.preprocess_input(image = visible)['image']
+                infrared = self.preprocess_input(image = infrared)['image']
             image = np.concatenate((visible, infrared), axis = -1)
         else:
             visible, mask = self.augment(image  = visible,
                                                 mask   = mask).values()
+            if self.preprocess_input:
+                visible = self.preprocess_input(image = visible)['image']
             image = visible
 
         # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
@@ -258,6 +275,7 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 num_channels = 3+3 if CFG.use_vi_inf else 3
+print(f"Number of channels: {num_channels}")
 
 if CFG.seg_model_name == "UNet":
     model = smp.Unet(encoder_name    = CFG.encoder_name,
@@ -339,7 +357,7 @@ LovaszLoss  = smp.losses.LovaszLoss(mode='multiclass', per_image=False)
 
 # %%
 loss_fn = TverskyLoss
-CFG.init_lr = 0.0005
+CFG.init_lr = 0.3#0.0005
 # optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
 optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # learning rate scheduler
@@ -401,7 +419,9 @@ def train_epoch(trainloader, model):
         match CFG.scheduler:
             case 'ReduceLROnPlateau':
                 scheduler.step(loss) # 
-            case 'CosineAnnealingLR': # CosineAnnealingWarmRestarts
+            case 'CosineAnnealingLR': #
+                scheduler.step()
+            case 'CosineAnnealingWarmRestarts': #
                 scheduler.step()
 
 

@@ -55,3 +55,15 @@ for x in MASK_DICT.keys():
     sub_df = test_df.loc[test_df.merged_label==x, :]
     print(f"In Test Set: {x} has {len(sub_df)} samples")
 # %%
+# Check if any image does not contain masks
+mask_folder = 'dataset/processed/masks'
+path = os.listdir(mask_folder)
+path = [os.path.join(mask_folder, p) for p in path]
+
+for p in path:
+    mask = cv2.imread(p, 0)
+    flatten_mask = np.ravel(mask)
+    all_0 = np.any(flatten_mask == 1)
+
+
+# %%

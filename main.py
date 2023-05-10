@@ -23,7 +23,7 @@ from matplotlib.patches import Rectangle
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
 from warmup_scheduler import GradualWarmupScheduler
 
-from infrared_models.infnet import INFAttNet
+from infrared_models.uiunet import UIUNET
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -81,16 +81,16 @@ def get_scheduler(cfg, optimizer):
 # Config
 class CFG:
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008
-    seg_model_name = 'UNet' # UNetPlusPlus, INFAttNet, UNet
+    seg_model_name = 'UNetPlusPlus' # UNetPlusPlus, UIUNet, UNet
 
     ensemble       = False
-    img_size       = 320
+    img_size       = 384
     scheduler      = "CosineAnnealingWarmRestarts" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
-    epochs         = 30
+    epochs         = 10
     init_lr        = 0.0005
     min_lr         = 1e-6
     T_0            = 25
-    batch_size     = 16
+    batch_size     = 8
     weight_decay   = 1e-6
     
     seed           = 42
@@ -100,14 +100,15 @@ class CFG:
     num_class      = 4
     save_weight_path     =  f'weights_dice_{encoder_name}.pth'
 
-    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 # %%
 def Augment(mode):
     if mode == "train":
     
-        return A.Compose([# A.Resize(CFG.img_size, CFG.img_size),
+        return A.Compose([ #A.RandomScale(scale_limit=(0.0, 1.0), p=0.5), 
+                          A.Resize(CFG.img_size, CFG.img_size),
                           A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
                           A.VerticalFlip(p=0.5),
@@ -129,7 +130,7 @@ def Augment(mode):
                          additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
     
     else: # valid test
-        return A.Compose([# A.Resize(CFG.img_size, CFG.img_size), 
+        return A.Compose([A.Resize(CFG.img_size, CFG.img_size), 
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))],
                          additional_targets={'image2': 'image'})
 
@@ -252,8 +253,8 @@ elif CFG.seg_model_name == "UNetPlusPlus":
             encoder_weights="imagenet",     
             in_channels=3+3,     
             classes=CFG.num_class+1,).to(CFG.device)
-elif CFG.seg_model_name == "INFAttNet":
-    model = INFAttNet(n_class=CFG.num_class+1).to(CFG.device)
+elif CFG.seg_model_name == "UIUNet":
+    model = model = UIUNET(in_ch=3+3, out_ch=CFG.num_class+1).to(CFG.device)
 
 print(count_parameters(model))
 
@@ -318,11 +319,10 @@ TverskyLoss = smp.losses.TverskyLoss(mode='multiclass', log_loss=False, alpha=al
 DiceLoss    = smp.losses.DiceLoss(mode='multiclass')
 CELoss     = smp.losses.SoftCrossEntropyLoss()
 LovaszLoss  = smp.losses.LovaszLoss(mode='multiclass', per_image=False)
-# def criterion(y_pred, y_true):
-#     return 0.5*CELoss(y_pred, y_true) + 0.5*TverskyLoss(y_pred, y_true)
+
 # %%
 loss_fn = TverskyLoss
-CFG.init_lr = 0.0005
+CFG.init_lr = 0.00001#0.0005
 # optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
 optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # learning rate scheduler
@@ -356,11 +356,25 @@ def train_epoch(trainloader, model):
     iters = len(trainloader)
     
     for (inputs, targets, *_) in trainloader:
-        # forward pass       
-        outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
+        # forward pass
+        if CFG.seg_model_name == 'UIUNet':
+            d0, d1, d2, d3, d4, d5, d6 = model(inputs.permute(0,-1,1,2).to(CFG.device))
+        else:
+            outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
         targets = targets.long().to(CFG.device)
         # calculate loss
-        loss = loss_fn(outputs, targets)
+        if CFG.seg_model_name == 'UIUNet':
+            loss0 = loss_fn(d0, targets)
+            # loss1 = loss_fn(d1, targets)
+            # loss2 = loss_fn(d2, targets)
+            # loss3 = loss_fn(d3, targets)
+            # loss4 = loss_fn(d4, targets)
+            # loss5 = loss_fn(d5, targets)
+            # loss6 = loss_fn(d6, targets)
+            # loss = (loss0 + loss1 + loss2 + loss3 + loss4 + loss5 + loss6)/7
+            loss = loss0
+        else:
+            loss = loss_fn(outputs, targets)
 
         # backward pass and update weights
         optimizer.zero_grad()
@@ -379,15 +393,36 @@ def train_epoch(trainloader, model):
     return np.mean(losses)
 
 def evaluate_epoch(validloader, model):
-    
+    model.eval()
     scores = []
     loss = []
     for (inputs, targets, label, _) in validloader:
-        
-        outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
+        if CFG.seg_model_name == 'UIUNet':
+            d0, d1, d2, d3, d4, d5, d6 = model(inputs.permute(0,-1,1,2).to(CFG.device))
+            d0 = d0.detach().cpu()
+            # d1 = d1.detach().cpu()
+            # d2 = d2.detach().cpu()
+            # d3 = d3.detach().cpu()
+            # d4 = d4.detach().cpu()
+            # d5 = d5.detach().cpu()
+            # d6 = d6.detach().cpu()
+            outputs = d0
+        else:
+            outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
         targets = targets.long()
-        
-        val_loss = loss_fn(outputs, targets)
+        # calculate loss
+        if CFG.seg_model_name == 'UIUNet':
+            loss0 = loss_fn(d0, targets)
+            # loss1 = loss_fn(d1, targets)
+            # loss2 = loss_fn(d2, targets)
+            # loss3 = loss_fn(d3, targets)
+            # loss4 = loss_fn(d4, targets)
+            # loss5 = loss_fn(d5, targets)
+            # loss6 = loss_fn(d6, targets)
+            # val_loss = (loss0 + loss1 + loss2 + loss3 + loss4 + loss5 + loss6)/7
+            val_loss = loss0
+        else:
+            val_loss = loss_fn(outputs, targets)
         #calculate dice
         score = hard_dice(outputs, targets, label)
         
@@ -477,12 +512,13 @@ test_loader = DataLoader(test_dataset,
                          shuffle     = False,
                          pin_memory  = False)
 
+# %%
 # load model
-# model.load_state_dict(torch.load("./0.301_weights_dice_resnet101.pth"))
+model.load_state_dict(torch.load("./0.310_weights_dice_resnet101.pth"))
 
-# test_results = predict(model, test_loader)
+test_results = predict(model, test_loader)
 
-# df_submission = pd.DataFrame.from_dict(test_results)
+df_submission = pd.DataFrame.from_dict(test_results)
 
-# df_submission.to_csv("my_submission.csv", index = False)
+df_submission.to_csv("my_submission.csv", index = False)
 # %%

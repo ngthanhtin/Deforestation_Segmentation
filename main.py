@@ -23,6 +23,7 @@ from matplotlib.patches import Rectangle
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
 from warmup_scheduler import GradualWarmupScheduler
 
+from infrared_models.infnet import INFAttNet
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -80,12 +81,12 @@ def get_scheduler(cfg, optimizer):
 # Config
 class CFG:
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008
-    seg_model_name = 'UNet' # UNetPlusPlus
+    seg_model_name = 'UNet' # UNetPlusPlus, INFAttNet, UNet
 
     ensemble       = False
     img_size       = 320
-    scheduler      = "CosineAnnealingLR" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
-    epochs         = 10
+    scheduler      = "CosineAnnealingWarmRestarts" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
+    epochs         = 30
     init_lr        = 0.0005
     min_lr         = 1e-6
     T_0            = 25
@@ -124,13 +125,13 @@ def Augment(mode):
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
                         #   A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
-                          ],)
-                         #additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
+                          ],
+                         additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
     
     else: # valid test
         return A.Compose([# A.Resize(CFG.img_size, CFG.img_size), 
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))],
-                         )#additional_targets={'image2': 'image'})
+                         additional_targets={'image2': 'image'})
 
 class FOREST(Dataset):
     def __init__(self,
@@ -172,8 +173,8 @@ class FOREST(Dataset):
         
         #augment mask and image
         # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
-        visible, mask = self.augment(image  = visible,
-                                            # image2 = infrared,
+        visible, infrared, mask = self.augment(image  = visible,
+                                            image2 = infrared,
                                             mask   = mask).values()
         # else:
         #     visible, infrared, mask = self.augment2(image  = visible,
@@ -181,8 +182,8 @@ class FOREST(Dataset):
         #                                         mask   = mask).values()
         
         # concat visible and infared and a single 5-channel image
-        # image = np.concatenate((visible, infrared), axis = -1)
-        image = visible
+        image = np.concatenate((visible, infrared), axis = -1)
+        # image = visible
         
         return torch.tensor(image), torch.tensor(mask), label, case_id
 
@@ -233,185 +234,29 @@ for i in range(600,605):
     
     visible = image[..., :3]
     
-    show_image(visible, mask = mask)
-    plt.show()
+    # show_image(visible, mask = mask)
+    # plt.show()
 
-# %%
-# ResNet Attention
-
-class DecoderBlock(nn.Module):
-    def __init__(self, in_channels, n_filters, is_deconv=False, scale=True):
-        super().__init__()
-
-        # B, C, H, W -> B, C/4, H, W
-        self.conv1 = nn.Conv2d(in_channels, in_channels // 4, 1)
-        self.norm1 = nn.BatchNorm2d(in_channels // 4)
-        nonlinearity = nn.ReLU
-        self.relu1 = nonlinearity(inplace=True)
-
-        if scale:
-            # B, C/4, H, W -> B, C/4, H, W
-            if is_deconv:
-                self.upscale = nn.ConvTranspose2d(in_channels // 4, in_channels // 4, 3,
-                                                  stride=2, padding=1, output_padding=1)
-            else:
-                self.upscale = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        else:
-            self.upscale = nn.Conv2d(in_channels // 4, in_channels // 4, 3, padding=1)
-        self.norm2 = nn.BatchNorm2d(in_channels // 4)
-        self.relu2 = nonlinearity(inplace=True)
-
-        # B, C/4, H, W -> B, C, H, W
-        self.conv3 = nn.Conv2d(in_channels // 4, n_filters, 1)
-        self.norm3 = nn.BatchNorm2d(n_filters)
-        self.relu3 = nonlinearity(inplace=True)
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.norm1(x)
-        x = self.relu1(x)
-        x = self.upscale(x)
-        x = self.norm2(x)
-        x = self.relu2(x)
-        x = self.conv3(x)
-        x = self.norm3(x)
-        x = self.relu3(x)
-        return x
-
-class Attention_block(nn.Module):
-    def __init__(self,F_g,F_l,F_int):
-        super(Attention_block,self).__init__()
-        self.W_g = nn.Sequential(
-            nn.Conv2d(F_g, F_int, kernel_size=1,stride=1,padding=0,bias=True),
-            nn.BatchNorm2d(F_int)
-            )
-        
-        self.W_x = nn.Sequential(
-            nn.Conv2d(F_l, F_int, kernel_size=1,stride=1,padding=0,bias=True),
-            nn.BatchNorm2d(F_int)
-        )
-
-        self.psi = nn.Sequential(
-            nn.Conv2d(F_int, 1, kernel_size=1,stride=1,padding=0,bias=True),
-            nn.BatchNorm2d(1),
-            nn.Sigmoid()
-        )
-        
-        self.relu = nn.ReLU(inplace=True)
-        
-    def forward(self,g,x):
-        g1 = self.W_g(g)
-        x1 = self.W_x(x)
-        psi = self.relu(g1+x1)
-        psi = self.psi(psi)
-
-        return x*psi
-
-class conv_block(nn.Module):
-    def __init__(self,ch_in,ch_out):
-        super(conv_block,self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(ch_in, ch_out, kernel_size=3,stride=1,padding=1,bias=True),
-            nn.BatchNorm2d(ch_out),
-            nn.ReLU(inplace=True),
-        )
-    def forward(self,x):
-        x = self.conv(x)
-        return x
-
-
-
-class Resnest(nn.Module):
-
-    def __init__(self, model_name, out_neurons=600):
-        super().__init__()
-        try:
-            self.backbone = timm.create_model(model_name, pretrained=True)
-        except:
-            self.backbone = torch.hub.load('zhanghang1989/ResNeSt', model_name, pretrained=True)
-            
-        self.in_features = 2048
-        
-    def forward(self, x):
-        x = self.backbone.conv1(x)
-        x = self.backbone.bn1(x)
-        try:
-            x = self.backbone.act1(x)
-        except:
-            x = self.backbone.relu(x)
-        x = self.backbone.maxpool(x)
-
-        layer1 = self.backbone.layer1(x)
-        layer2 = self.backbone.layer2(layer1)
-        layer3 = self.backbone.layer3(layer2)
-
-        return x, layer1, layer2, layer3
-
-class ResnestDecoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        nonlinearity = nn.ReLU
-        self.decode1 = DecoderBlock(1024, 512)
-        self.decode2 = DecoderBlock(512, 256)
-        self.decode3 = DecoderBlock(256, 64)
-        self.decode4 = DecoderBlock(64, 32)
-        self.decode5 = DecoderBlock(32, 16)
-        self.conv1 = conv_block(1024, 512)
-        self.conv2 = conv_block(512, 256)
-        self.conv3 = conv_block(128, 64)
-        self.Att1 = Attention_block(512, 512, 256)
-        self.Att2 = Attention_block(256, 256, 64)
-        self.Att3 = Attention_block(64, 64, 32)
-        self.Att4 = Attention_block(64, 64, 32)
-        self.conv4 = nn.Conv2d(64, 64, 3, 2, 1)
-        self.finalconv2 = nn.Conv2d(16, 4, 3, padding=1)
-        self.finalrelu2 = nonlinearity(inplace=True)
-        self.finalconv3 = nn.Conv2d(4, 1, 3, padding=1)
-    
-    def forward(self, x, l1, l2, l3):
-        d1 = self.decode1(l3)
-        l2 = self.Att1(d1, l2)
-        d1 = torch.cat((l2,d1),dim=1)
-        d1 = self.conv1(d1)
-        d2 = self.decode2(d1)
-        l1 = self.Att2(d2, l1)
-        d2 = torch.cat((l1,d2),dim=1)
-        d2 = self.conv2(d2)
-        d3 = self.decode3(d2)
-        d3 = self.conv4(d3)
-        x = self.Att3(d3, x)
-        d3 = torch.cat((x,d3),dim=1)
-        d3 = self.conv3(d3)
-        d4 = self.decode4(d3)
-        d5 = self.decode5(d4)
-        out = self.finalconv2(d5)
-        out = self.finalrelu2(out)
-        out = self.finalconv3(out)
-        return out
-
-class resUnest(nn.Module):
-    def __init__(self, encoder_model):
-        super().__init__()
-        self.resnest = Resnest(model_name=encoder_model)
-        self.decoder = ResnestDecoder()
-        
-    def forward(self, x):
-        x, l1, l2, l3 = self.resnest(x)
-        out = self.decoder(x, l1, l2, l3)
-        return out
 # %%
 # load models
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 if CFG.seg_model_name == "UNet":
     model = smp.Unet(encoder_name    = CFG.encoder_name,
                     encoder_weights = "imagenet",
-                    in_channels     = 3,
+                    in_channels     = 3+3,
                     classes         = CFG.num_class+1).to(CFG.device)
 elif CFG.seg_model_name == "UNetPlusPlus":
     model = smp.UnetPlusPlus(
             encoder_name=CFG.encoder_name,      
             encoder_weights="imagenet",     
-            in_channels=3+3,                  
+            in_channels=3+3,     
             classes=CFG.num_class+1,).to(CFG.device)
+elif CFG.seg_model_name == "INFAttNet":
+    model = INFAttNet(n_class=CFG.num_class+1).to(CFG.device)
+
+print(count_parameters(model))
+
 # load model
 # model.load_state_dict(torch.load("./weights.pth"))
 
@@ -501,7 +346,7 @@ def train(trainloader, validloader, model,
             if best_valid_dice <= valid_dice:
                 print("Saving...")
                 best_valid_dice = valid_dice
-                torch.save(model.state_dict(), f"./{CFG.save_weight_path}")
+                torch.save(model.state_dict(), f"./{valid_dice:.3f}_{CFG.save_weight_path}")
         
     return model
 
@@ -514,7 +359,6 @@ def train_epoch(trainloader, model):
         # forward pass       
         outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
         targets = targets.long().to(CFG.device)
-
         # calculate loss
         loss = loss_fn(outputs, targets)
 
@@ -634,11 +478,11 @@ test_loader = DataLoader(test_dataset,
                          pin_memory  = False)
 
 # load model
-model.load_state_dict(torch.load("./weights_dice_resnet101.pth"))
+# model.load_state_dict(torch.load("./0.301_weights_dice_resnet101.pth"))
 
-test_results = predict(model, test_loader)
+# test_results = predict(model, test_loader)
 
-df_submission = pd.DataFrame.from_dict(test_results)
+# df_submission = pd.DataFrame.from_dict(test_results)
 
-df_submission.to_csv("my_submission.csv", index = False)
+# df_submission.to_csv("my_submission.csv", index = False)
 # %%

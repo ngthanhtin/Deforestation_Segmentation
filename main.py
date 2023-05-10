@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import KFold
 
 import segmentation_models_pytorch as smp
 import albumentations as A
@@ -84,18 +85,19 @@ class CFG:
     seg_model_name = 'UNetPlusPlus' # UNetPlusPlus, UIUNet, UNet
 
     ensemble       = False
-    img_size       = 384
+    use_vi_inf     = False
+    img_size       = 320
     scheduler      = "CosineAnnealingWarmRestarts" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
     epochs         = 10
     init_lr        = 0.0005
     min_lr         = 1e-6
     T_0            = 25
-    batch_size     = 8
+    batch_size     = 16
     weight_decay   = 1e-6
     
     seed           = 42
     n_fold         = 4
-    trn_fold       = [0]
+    train_fold     = [0]
 
     num_class      = 4
     save_weight_path     =  f'weights_dice_{encoder_name}.pth'
@@ -106,8 +108,7 @@ set_seed(CFG.seed)
 # %%
 def Augment(mode):
     if mode == "train":
-    
-        return A.Compose([ #A.RandomScale(scale_limit=(0.0, 1.0), p=0.5), 
+        train_aug_list = [ #A.RandomScale(scale_limit=(0.0, 1.0), p=0.5), 
                           A.Resize(CFG.img_size, CFG.img_size),
                           A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
@@ -126,13 +127,20 @@ def Augment(mode):
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
                         #   A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
-                          ],
-                         additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
-    
+                          ]
+        if CFG.use_vi_inf:
+            return A.Compose(train_aug_list,
+                            additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
+        else:
+            return A.Compose(train_aug_list)
     else: # valid test
-        return A.Compose([A.Resize(CFG.img_size, CFG.img_size), 
-                          A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))],
-                         additional_targets={'image2': 'image'})
+        valid_test_aug_list = [A.Resize(CFG.img_size, CFG.img_size), 
+                            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))]
+        if CFG.use_vi_inf:
+            return A.Compose(valid_test_aug_list,
+                            additional_targets={'image2': 'image'})
+        else:
+            return A.Compose(valid_test_aug_list)
 
 class FOREST(Dataset):
     def __init__(self,
@@ -173,18 +181,24 @@ class FOREST(Dataset):
         mask[mask == 1.] = label
         
         #augment mask and image
+        
+        if CFG.use_vi_inf:
+            visible, infrared, mask = self.augment(image  = visible,
+                                                image2 = infrared,
+                                                mask   = mask).values()
+            image = np.concatenate((visible, infrared), axis = -1)
+        else:
+            visible, mask = self.augment(image  = visible,
+                                                mask   = mask).values()
+            image = visible
+
         # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
-        visible, infrared, mask = self.augment(image  = visible,
-                                            image2 = infrared,
-                                            mask   = mask).values()
         # else:
         #     visible, infrared, mask = self.augment2(image  = visible,
         #                                         image2 = infrared,
         #                                         mask   = mask).values()
         
-        # concat visible and infared and a single 5-channel image
-        image = np.concatenate((visible, infrared), axis = -1)
-        # image = visible
+        
         
         return torch.tensor(image), torch.tensor(mask), label, case_id
 
@@ -242,19 +256,22 @@ for i in range(600,605):
 # load models
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+num_channels = 3+3 if CFG.use_vi_inf else 3
+
 if CFG.seg_model_name == "UNet":
     model = smp.Unet(encoder_name    = CFG.encoder_name,
                     encoder_weights = "imagenet",
-                    in_channels     = 3+3,
+                    in_channels     = num_channels,
                     classes         = CFG.num_class+1).to(CFG.device)
 elif CFG.seg_model_name == "UNetPlusPlus":
     model = smp.UnetPlusPlus(
             encoder_name=CFG.encoder_name,      
             encoder_weights="imagenet",     
-            in_channels=3+3,     
+            in_channels=num_channels,     
             classes=CFG.num_class+1,).to(CFG.device)
 elif CFG.seg_model_name == "UIUNet":
-    model = model = UIUNET(in_ch=3+3, out_ch=CFG.num_class+1).to(CFG.device)
+    model = model = UIUNET(in_ch=num_channels, out_ch=CFG.num_class+1).to(CFG.device)
 
 print(count_parameters(model))
 
@@ -322,7 +339,7 @@ LovaszLoss  = smp.losses.LovaszLoss(mode='multiclass', per_image=False)
 
 # %%
 loss_fn = TverskyLoss
-CFG.init_lr = 0.00001#0.0005
+CFG.init_lr = 0.0005
 # optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
 optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # learning rate scheduler
@@ -455,6 +472,31 @@ valid_loader = DataLoader(train_dataset,
                           pin_memory  = False)
 
 # %%
+# Train k-Fold
+# Split your dataset into K-folds
+# kf = KFold(n_splits=CFG.n_fold, shuffle=True)
+# for fold, (train_idx, val_idx) in enumerate(kf.split(visible_folder)):
+#     if fold != CFG.train_fold:
+#         continue
+#     train_data = visible_folder[train_idx]
+#     train_dataset = FOREST(train_data1, train_data2, mask_folder, label_file, mode='train')
+#     train_loader = DataLoader(train_dataset, 
+#                                   batch_size=CFG.batch_size, 
+#                                   num_workers=14, 
+#                                   shuffle=True, 
+#                                   pin_memory=True)
+
+#     # Create a PyTorch DataLoader for the validation set
+#     val_data = visible_folder[val_idx]
+#     val_dataset = FOREST(val_data1, val_data2, mask_folder, label_file, mode='valid')
+#     val_loader = DataLoader(val_dataset, 
+#                                 batch_size=1, 
+#                                 num_workers=8, 
+#                                 shuffle=False,
+#                                 pin_memory=False)
+#     model = train(train_loader, valid_loader, model,
+#               n_epoch = CFG.epochs)
+# %%
 # Train
 model = train(train_loader, valid_loader, model,
               n_epoch = CFG.epochs)
@@ -514,11 +556,11 @@ test_loader = DataLoader(test_dataset,
 
 # %%
 # load model
-model.load_state_dict(torch.load("./0.310_weights_dice_resnet101.pth"))
+# model.load_state_dict(torch.load("./0.310_weights_dice_resnet101.pth"))
 
-test_results = predict(model, test_loader)
+# test_results = predict(model, test_loader)
 
-df_submission = pd.DataFrame.from_dict(test_results)
+# df_submission = pd.DataFrame.from_dict(test_results)
 
-df_submission.to_csv("my_submission.csv", index = False)
+# df_submission.to_csv("my_submission.csv", index = False)
 # %%

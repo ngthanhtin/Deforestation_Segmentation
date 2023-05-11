@@ -9,6 +9,7 @@ from glob import glob
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms
 
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
@@ -19,6 +20,9 @@ from segmentation_models_pytorch.encoders import get_preprocessing_fn
 
 import albumentations as A
 import timm
+from copy_paste_aug.copy_paste import CopyPaste
+
+from PIL import Image
 
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
@@ -27,6 +31,8 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealin
 from warmup_scheduler import GradualWarmupScheduler
 
 from infrared_models.uiunet import UIUNET
+from auto_augment import AutoAugImageNetPolicy
+
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -69,9 +75,9 @@ class GradualWarmupSchedulerV2(GradualWarmupScheduler):
 def get_scheduler(cfg, optimizer):
     scheduler = None
     if cfg.scheduler == 'ReduceLROnPlateau':
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=1e-7, eps=1e-08)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=1e-7, eps=1e-08)
     elif cfg.scheduler == 'CosineAnnealingLR':
-        scheduler_cosine =torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 
+        scheduler_cosine = CosineAnnealingLR(optimizer, 
                                          T_0 = CFG.epochs, 
                                          T_mult=1, 
                                          eta_min=1e-7, 
@@ -80,7 +86,7 @@ def get_scheduler(cfg, optimizer):
         scheduler = GradualWarmupSchedulerV2(
             optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
     elif cfg.scheduler == 'CosineAnnealingWarmRestarts':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,T_0=cfg.T_0, 
+        scheduler = CosineAnnealingWarmRestarts(optimizer,T_0=cfg.T_0, 
                                                              eta_min=cfg.min_lr)
     return scheduler
 
@@ -93,7 +99,7 @@ class CFG:
     ensemble       = False
     use_vi_inf     = True
     img_size       = 320
-    scheduler      = "CosineAnnealingWarmRestarts" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
+    scheduler      = "ABC" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
     epochs         = 10
     init_lr        = 0.0005
     min_lr         = 1e-6
@@ -108,7 +114,7 @@ class CFG:
     num_class      = 4 # 4
     save_weight_path     =  f'weights_dice_{encoder_name}.pth'
 
-    device         = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 
@@ -119,7 +125,8 @@ preprocessing_fn = None
 def Augment(mode):
     if mode == "train":
         train_aug_list = [ #A.RandomScale(scale_limit=(0.0, 1.0), p=0.5), 
-                          A.Resize(CFG.img_size, CFG.img_size),
+                          A.Resize(480, 480),
+                          A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
                           A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
                           A.VerticalFlip(p=0.5),
@@ -133,6 +140,8 @@ def Augment(mode):
                                  brightness_by_max=True,p=0.5),
                           A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=30, 
                            val_shift_limit=0, p=0.5),
+                        #    AutoAugImageNetPolicy(),
+                        # CopyPaste(blend=True, sigma=1, pct_objects_paste=0.5, p=1),
                         #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
                         #   A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
@@ -144,7 +153,9 @@ def Augment(mode):
         else:
             return A.Compose(train_aug_list)
     else: # valid test
-        valid_test_aug_list = [A.Resize(CFG.img_size, CFG.img_size), 
+        valid_test_aug_list = [
+                            A.Resize(480, 480),
+                            A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
                             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))]
         if CFG.use_vi_inf:
             return A.Compose(valid_test_aug_list,
@@ -152,6 +163,21 @@ def Augment(mode):
         else:
             return A.Compose(valid_test_aug_list)
 
+# def Augment(mode):
+    # if mode == 'train':
+    #     transform=transforms.Compose([
+    #                                 transforms.Resize((480, 480), Image.BILINEAR),
+    #                                 transforms.RandomCrop((320, 320)),
+    #                                 transforms.RandomHorizontalFlip(),
+    #                                 transforms.ToTensor(),])
+    #                                 # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    # else:        
+    #     transform=transforms.Compose([
+    #                                 transforms.Resize((480, 480), Image.BILINEAR),
+    #                                 transforms.CenterCrop((320, 320)),
+    #                                 transforms.ToTensor(),])
+                                    # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    # return transform
 class FOREST(Dataset):
     def __init__(self,
                  visible_folder,
@@ -201,12 +227,14 @@ class FOREST(Dataset):
             if self.preprocess_input:
                 visible = self.preprocess_input(image = visible)['image']
                 infrared = self.preprocess_input(image = infrared)['image']
+
             image = np.concatenate((visible, infrared), axis = -1)
         else:
             visible, mask = self.augment(image  = visible,
                                                 mask   = mask).values()
-            if self.preprocess_input:
-                visible = self.preprocess_input(image = visible)['image']
+
+            # if self.preprocess_input:
+            #     infrared = self.preprocess_input(image = infrared)['image']
             image = visible
 
         # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
@@ -263,11 +291,10 @@ train_dataset = FOREST(visible_folder, infrared_folder, mask_folder, label_file,
 
 for i in range(600,605):
     image, mask, *_ = train_dataset[i]
-    
     visible = image[..., :3]
     
-    # show_image(visible, mask = mask)
-    # plt.show()
+    show_image(visible, mask = mask)
+    plt.show()
 
 # %%
 # load models
@@ -352,12 +379,12 @@ alpha = 0.3
 beta = 1 - alpha
 TverskyLoss = smp.losses.TverskyLoss(mode='multiclass', log_loss=False, alpha=alpha, beta=beta)
 DiceLoss    = smp.losses.DiceLoss(mode='multiclass')
-CELoss     = smp.losses.SoftCrossEntropyLoss()
+CELoss      = smp.losses.SoftCrossEntropyLoss()
 LovaszLoss  = smp.losses.LovaszLoss(mode='multiclass', per_image=False)
 
 # %%
 loss_fn = TverskyLoss
-CFG.init_lr = 0.3#0.0005
+CFG.init_lr = 0.0005
 # optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
 optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # learning rate scheduler
@@ -478,14 +505,15 @@ train_dataset = FOREST(visible_folder, infrared_folder, mask_folder, label_file,
                        mode = "train")
 valid_dataset = FOREST(visible_folder, infrared_folder, mask_folder, label_file,
                        mode = "valid")
-
+print(f"Len of train dataset: {len(train_dataset)}")
+print(f"Len of valid dataset: {len(valid_dataset)}")
 train_loader = DataLoader(train_dataset,
                           batch_size  = CFG.batch_size,
                           num_workers = 14,
                           shuffle     = True, 
                           pin_memory  = True)
 
-valid_loader = DataLoader(train_dataset,
+valid_loader = DataLoader(valid_dataset,
                           batch_size  = 1,
                           num_workers = 8,
                           shuffle     = False,

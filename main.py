@@ -99,7 +99,7 @@ class CFG:
     ensemble       = False
     use_vi_inf     = True
     img_size       = 320
-    scheduler      = "ABC" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
+    scheduler      = "CosineAnnealingWarmRestarts" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
     epochs         = 10
     init_lr        = 0.0005
     min_lr         = 1e-6
@@ -114,7 +114,7 @@ class CFG:
     num_class      = 4 # 4
     save_weight_path     =  f'weights_dice_{encoder_name}.pth'
 
-    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 
@@ -125,7 +125,6 @@ preprocessing_fn = None
 def Augment(mode):
     if mode == "train":
         train_aug_list = [ #A.RandomScale(scale_limit=(0.0, 1.0), p=0.5), 
-                          A.Resize(480, 480),
                           A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
                           A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
@@ -148,14 +147,13 @@ def Augment(mode):
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
                           ]
         if CFG.use_vi_inf:
-            return A.Compose(train_aug_list,
+            return A.Compose(train_aug_list, #bbox_params=A.BboxParams(format="coco"),
                             additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
         else:
             return A.Compose(train_aug_list)
     else: # valid test
         valid_test_aug_list = [
-                            A.Resize(480, 480),
-                            A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
+                            # A.Resize(CFG.img_size, CFG.img_size),
                             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))]
         if CFG.use_vi_inf:
             return A.Compose(valid_test_aug_list,
@@ -163,21 +161,6 @@ def Augment(mode):
         else:
             return A.Compose(valid_test_aug_list)
 
-# def Augment(mode):
-    # if mode == 'train':
-    #     transform=transforms.Compose([
-    #                                 transforms.Resize((480, 480), Image.BILINEAR),
-    #                                 transforms.RandomCrop((320, 320)),
-    #                                 transforms.RandomHorizontalFlip(),
-    #                                 transforms.ToTensor(),])
-    #                                 # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-    # else:        
-    #     transform=transforms.Compose([
-    #                                 transforms.Resize((480, 480), Image.BILINEAR),
-    #                                 transforms.CenterCrop((320, 320)),
-    #                                 transforms.ToTensor(),])
-                                    # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-    # return transform
 class FOREST(Dataset):
     def __init__(self,
                  visible_folder,
@@ -233,8 +216,8 @@ class FOREST(Dataset):
             visible, mask = self.augment(image  = visible,
                                                 mask   = mask).values()
 
-            # if self.preprocess_input:
-            #     infrared = self.preprocess_input(image = infrared)['image']
+            if self.preprocess_input:
+                infrared = self.preprocess_input(image = infrared)['image']
             image = visible
 
         # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
@@ -604,11 +587,11 @@ test_loader = DataLoader(test_dataset,
 
 # %%
 # load model
-# model.load_state_dict(torch.load("./0.310_weights_dice_resnet101.pth"))
+model.load_state_dict(torch.load("./0.331_weights_dice_resnet101.pth"))
 
-# test_results = predict(model, test_loader)
+test_results = predict(model, test_loader)
 
-# df_submission = pd.DataFrame.from_dict(test_results)
+df_submission = pd.DataFrame.from_dict(test_results)
 
-# df_submission.to_csv("my_submission.csv", index = False)
+df_submission.to_csv("my_submission.csv", index = False)
 # %%

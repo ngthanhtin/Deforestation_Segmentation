@@ -35,6 +35,10 @@ import os
 df = pd.read_csv('./dataset/processed/label.csv')
 df
 # %%
+label_list = set(df.merged_label.values.tolist())
+label_list
+
+# %%
 train_df = df[df["mode"] == 'train']
 test_df = df[df["mode"] == 'test']
 #case_id, deforestation_type, lat, long, year, _ =train_df.iloc[0].to_list()

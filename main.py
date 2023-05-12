@@ -94,7 +94,7 @@ def get_scheduler(cfg, optimizer):
 # Config
 class CFG:
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008
-    seg_model_name = 'UNetPlusPlus' # UNetPlusPlus, UIUNet, UNet
+    seg_model_name = 'UNetPlusPlus' # UNetPlusPlus, UIUNet, UNet, PAN
 
     ensemble       = False
     use_vi_inf     = True
@@ -112,7 +112,8 @@ class CFG:
     train_fold     = [0]
 
     num_class      = 4 # 4
-    save_weight_path     =  f'weights_dice_{encoder_name}.pth'
+    num_inputs     = 2 if use_vi_inf else 1
+    save_weight_path     =  f'weights_dice_{encoder_name}_{seg_model_name}_{num_inputs}images.pth'
 
     device         = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 
@@ -166,13 +167,14 @@ class FOREST(Dataset):
                  visible_folder,
                  infrared_folder,
                  mask_folder, 
-                 label_file,
+                 label_df,
                  preprocess_input=None,
                  mode = "train" # train | valid | test
                 ):
         
-        _label_df = pd.read_csv(label_file)
-        self.label_df        = _label_df[_label_df["mode"] == mode]        
+        _label_df            = label_df
+        # self.label_df        = _label_df[_label_df["mode"] == mode]   
+        self.label_df        = _label_df
         self.mode            = mode
         self.visible_folder  = visible_folder
         self.infrared_folder = infrared_folder
@@ -189,7 +191,7 @@ class FOREST(Dataset):
         return len(self.label_df)
         
     def __getitem__(self, index):
-                
+
         case_id, deforestation_type, lat, long, year, _ = self.label_df.iloc[index].to_list()
         
         # load image and mask
@@ -199,6 +201,7 @@ class FOREST(Dataset):
         
         # convert the foreground region in the mask to the corressponding label integer
         label = self.mask_dict[deforestation_type]
+        
         mask[mask == 1.] = label
         
         #augment mask and image
@@ -269,15 +272,22 @@ infrared_folder = "./dataset/processed/infrareds/"
 mask_folder     = "./dataset/processed/masks/"
 label_file      = "./dataset/processed/label.csv"
 
-train_dataset = FOREST(visible_folder, infrared_folder, mask_folder, label_file,
+label_df = pd.read_csv(label_file)
+train_df = label_df[label_df['mode'] == 'train']
+val_df = label_df[label_df['mode'] == 'valid']
+
+print(train_df.head(5))
+print(val_df.head(5))
+# %%%
+train_dataset = FOREST(visible_folder, infrared_folder, mask_folder, train_df,
                        mode = "train")
 
-for i in range(600,605):
+for i in range(0,100):
     image, mask, *_ = train_dataset[i]
     visible = image[..., :3]
     
-    show_image(visible, mask = mask)
-    plt.show()
+    # show_image(visible, mask = mask)
+    # plt.show()
 
 # %%
 # load models
@@ -298,6 +308,13 @@ elif CFG.seg_model_name == "UNetPlusPlus":
             encoder_weights="imagenet",     
             in_channels=num_channels,     
             classes=CFG.num_class+1,).to(CFG.device)
+elif CFG.seg_model_name == 'PAN':
+    model = smp.PAN(
+        encoder_name=CFG.encoder_name, 
+        encoder_weights='imagenet', 
+        in_channels=num_channels,
+        classes=CFG.num_class+1, 
+    ).to(CFG.device)
 elif CFG.seg_model_name == "UIUNet":
     model = model = UIUNET(in_ch=num_channels, out_ch=CFG.num_class+1).to(CFG.device)
 
@@ -483,13 +500,16 @@ visible_folder  = "./dataset/processed/visibles/"
 infrared_folder = "./dataset/processed/infrareds/"
 mask_folder     = "./dataset/processed/masks/"
 label_file      = "./dataset/processed/label.csv"
+label_df        = pd.read_csv(label_file)
 
-train_dataset = FOREST(visible_folder, infrared_folder, mask_folder, label_file,
+train_df = label_df[label_df['mode'] == 'train']
+val_df = label_df[label_df['mode'] == 'valid']
+train_dataset = FOREST(visible_folder, infrared_folder, mask_folder, train_df,
                        mode = "train")
-valid_dataset = FOREST(visible_folder, infrared_folder, mask_folder, label_file,
+valid_dataset = FOREST(visible_folder, infrared_folder, mask_folder, val_df,
                        mode = "valid")
-print(f"Len of train dataset: {len(train_dataset)}")
-print(f"Len of valid dataset: {len(valid_dataset)}")
+print(f"Len of full train dataset: {len(train_dataset)}")
+print(f"Len of full valid dataset: {len(valid_dataset)}")
 train_loader = DataLoader(train_dataset,
                           batch_size  = CFG.batch_size,
                           num_workers = 14,
@@ -505,28 +525,35 @@ valid_loader = DataLoader(valid_dataset,
 # %%
 # Train k-Fold
 # Split your dataset into K-folds
-# kf = KFold(n_splits=CFG.n_fold, shuffle=True)
-# for fold, (train_idx, val_idx) in enumerate(kf.split(visible_folder)):
-#     if fold != CFG.train_fold:
-#         continue
-#     train_data = visible_folder[train_idx]
-#     train_dataset = FOREST(train_data1, train_data2, mask_folder, label_file, mode='train')
-#     train_loader = DataLoader(train_dataset, 
-#                                   batch_size=CFG.batch_size, 
-#                                   num_workers=14, 
-#                                   shuffle=True, 
-#                                   pin_memory=True)
+kf = KFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
+train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
+train_val_df
 
-#     # Create a PyTorch DataLoader for the validation set
-#     val_data = visible_folder[val_idx]
-#     val_dataset = FOREST(val_data1, val_data2, mask_folder, label_file, mode='valid')
-#     val_loader = DataLoader(val_dataset, 
-#                                 batch_size=1, 
-#                                 num_workers=8, 
-#                                 shuffle=False,
-#                                 pin_memory=False)
-#     model = train(train_loader, valid_loader, model,
-#               n_epoch = CFG.epochs)
+#%%
+for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
+    # if fold != CFG.train_fold:
+    #     continue
+
+    train_df = train_val_df.iloc[train_idx].reset_index(drop=True)
+    train_dataset = FOREST(visible_folder, infrared_folder, mask_folder, train_df, mode='train')
+    train_loader = DataLoader(train_dataset, 
+                                  batch_size=CFG.batch_size, 
+                                  num_workers=14, 
+                                  shuffle=True, 
+                                  pin_memory=True)
+    
+    # # validation
+    val_df = train_val_df.iloc[val_idx].reset_index(drop=True)
+    val_dataset = FOREST(visible_folder, infrared_folder, mask_folder, val_df, mode='valid')
+    valid_loader = DataLoader(val_dataset, 
+                                batch_size=1, 
+                                num_workers=8, 
+                                shuffle=False,
+                                pin_memory=False)
+    model = train(train_loader, valid_loader, model,
+              n_epoch = CFG.epochs)
+    
+    print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')
 # %%
 # Train
 model = train(train_loader, valid_loader, model,
@@ -587,11 +614,11 @@ test_loader = DataLoader(test_dataset,
 
 # %%
 # load model
-model.load_state_dict(torch.load("./0.331_weights_dice_resnet101.pth"))
+# model.load_state_dict(torch.load("./0.331_weights_dice_resnet101.pth"))
 
-test_results = predict(model, test_loader)
+# test_results = predict(model, test_loader)
 
-df_submission = pd.DataFrame.from_dict(test_results)
+# df_submission = pd.DataFrame.from_dict(test_results)
 
-df_submission.to_csv("my_submission.csv", index = False)
+# df_submission.to_csv("my_submission.csv", index = False)
 # %%

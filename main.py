@@ -391,7 +391,7 @@ optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 scheduler = get_scheduler(CFG, optimizer)
 
 # %%
-def train(trainloader, validloader, model,
+def train(trainloader, validloader, model, fold=0,
           n_epoch = 10):
     
     best_valid_dice = 0.
@@ -408,7 +408,7 @@ def train(trainloader, validloader, model,
             if best_valid_dice <= valid_dice:
                 print("Saving...")
                 best_valid_dice = valid_dice
-                torch.save(model.state_dict(), f"./{valid_dice:.3f}_{CFG.save_weight_path}")
+                torch.save(model.state_dict(), f"./{valid_dice:.3f}_{fold}_{CFG.save_weight_path}")
         
     return model
 
@@ -550,7 +550,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
                                 num_workers=8, 
                                 shuffle=False,
                                 pin_memory=False)
-    model = train(train_loader, valid_loader, model,
+    model = train(train_loader, valid_loader, model, fold=fold,
               n_epoch = CFG.epochs)
     
     print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')

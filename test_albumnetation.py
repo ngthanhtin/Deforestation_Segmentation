@@ -40,7 +40,7 @@ def visualize(image, bboxes, category_ids, category_id_to_name):
     plt.axis('off')
     plt.imshow(img)
 # %%
-image = cv2.imread("/home/tin/deforestation/dataset/processed/visibles/3418608/composite.png")
+image = cv2.imread("/home/tin/deforestation/dataset/processed/visibles/9684487/composite.png")
 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 bboxes = [[5.66, 138.95, 147.09, 164.88]]#, [366.7, 80.84, 132.8, 181.84]]
@@ -52,68 +52,13 @@ category_id_to_name = {17: 'smallholder', 18: 'fire'}
 
 # %%
 visualize(image, bboxes, category_ids, category_id_to_name)
-# %%
-transform = A.Compose(
-    [A.HorizontalFlip(p=0.5)],
-    bbox_params=A.BboxParams(format='coco', label_fields=['category_ids']),
-)
 
-# %%
-random.seed(7)
-transformed = transform(image=image, bboxes=bboxes, category_ids=category_ids)
-visualize(
-    transformed['image'],
-    transformed['bboxes'],
-    transformed['category_ids'],
-    category_id_to_name,
-)
-
-# %%
-transform = A.Compose([
-        A.HorizontalFlip(p=0.5),
-        A.ShiftScaleRotate(p=0.5),
-        A.RandomBrightnessContrast(p=0.3),
-        A.RGBShift(r_shift_limit=30, g_shift_limit=30, b_shift_limit=30, p=0.3),
-    ],
-    bbox_params=A.BboxParams(format='coco', label_fields=['category_ids']),
-)
-random.seed(7)
-transformed = transform(image=image, bboxes=bboxes, category_ids=category_ids)
-visualize(
-    transformed['image'],
-    transformed['bboxes'],
-    transformed['category_ids'],
-    category_id_to_name,
-)
-# %%
-transform = A.Compose(
-    [A.CenterCrop(height=280, width=280, p=1)],
-    bbox_params=A.BboxParams(format='coco', label_fields=['category_ids']),
-)
-transformed = transform(image=image, bboxes=bboxes, category_ids=category_ids)
-visualize(
-    transformed['image'],
-    transformed['bboxes'],
-    transformed['category_ids'],
-    category_id_to_name,
-)
-# %%
-transform = A.Compose(
-    [A.CenterCrop(height=280, width=280, p=1)],
-    bbox_params=A.BboxParams(format='coco', min_area=4500, label_fields=['category_ids']),
-)
-transformed = transform(image=image, bboxes=bboxes, category_ids=category_ids)
-visualize(
-    transformed['image'],
-    transformed['bboxes'],
-    transformed['category_ids'],
-    category_id_to_name,
-)
 # %%
 transform = A.Compose(
     [A.CenterCrop(height=280, width=280, p=1)],
     bbox_params=A.BboxParams(format='coco', min_visibility=0.3, label_fields=['category_ids']),
 )
+random.seed(7)
 transformed = transform(image=image, bboxes=bboxes, category_ids=category_ids)
 visualize(
     transformed['image'],
@@ -121,4 +66,65 @@ visualize(
     transformed['category_ids'],
     category_id_to_name,
 )
+# %%
+# --- test copy paste----
+
+def visualize_2(image, bboxes):
+    img = image.copy()
+    for bbox in bboxes:
+        class_name = bbox[-1]
+        img = visualize_bbox(img, bbox[:-1], class_name)
+    plt.figure(figsize=(12, 12))
+    plt.axis('off')
+    plt.imshow(img)
+
+# %%
+from copy_paste_aug.copy_paste import CopyPaste
+import numpy as np
+
+transform = A.Compose(
+    [A.CenterCrop(height=280, width=280, p=1), 
+     CopyPaste(blend=True, sigma=1, pct_objects_paste=0.75, p=1)],
+    bbox_params=A.BboxParams(format='coco')#, min_visibility=0.3, label_fields=['category_ids']),
+)
+
+random.seed(7)
+
+image = cv2.imread("/home/tin/deforestation/dataset/processed/visibles/9684487/composite.png")
+image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+mask = cv2.imread("/home/tin/deforestation/dataset/processed/masks/9684487.png", 0)
+h,w,_ = image.shape
+mask = np.zeros((h,w))
+mask[138:138+165, 5+147] = 1.
+
+bboxes = [[5.66, 138.95, 147.09, 164.88, "smallholder" ]]#, [366.7, 80.84, 132.8, 181.84]]
+
+# We will use the mapping from category_id to the class name
+# to visualize the class label for the bounding box on the image
+
+
+random_image = cv2.imread("/home/tin/deforestation/dataset/processed/visibles/3847468/composite.png")
+random_image = cv2.cvtColor(random_image, cv2.COLOR_BGR2RGB)
+random_mask = cv2.imread("/home/tin/deforestation/dataset/processed/masks/3847468.png", 0)
+h,w,_ = random_image.shape
+random_mask = np.zeros((h,w))
+random_mask[100:100+114, 3+127] = 1.
+
+random_bboxes = [[3.66, 100.95, 127.09, 114.88, "random"]]#, [366.7, 80.84, 132.8, 181.84]]
+
+transformed = transform(image=image,
+                        bboxes=bboxes,
+                        masks = [mask],
+                        paste_image=random_image,
+                        paste_masks=[random_mask],                 
+                        paste_bboxes=random_bboxes,)
+
+print(type(transformed['paste_image']))
+
+
+# visualize_2(
+#     transformed['image'],
+#     transformed['bboxes'],
+# )
+
 # %%

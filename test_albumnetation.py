@@ -84,7 +84,7 @@ import numpy as np
 
 transform = A.Compose(
     [A.CenterCrop(height=280, width=280, p=1), 
-     CopyPaste(blend=True, sigma=1, pct_objects_paste=0.75, p=1)],
+     CopyPaste(blend=True, sigma=1, pct_objects_paste=0.5, p=1)],
     bbox_params=A.BboxParams(format='coco')#, min_visibility=0.3, label_fields=['category_ids']),
 )
 
@@ -108,9 +108,9 @@ random_image = cv2.cvtColor(random_image, cv2.COLOR_BGR2RGB)
 random_mask = cv2.imread("/home/tin/deforestation/dataset/processed/masks/3847468.png", 0)
 h,w,_ = random_image.shape
 random_mask = np.zeros((h,w))
-random_mask[100:100+114, 3+127] = 1.
+random_mask[100:100+114, 3+127] = 2.
 
-random_bboxes = [[3.66, 100.95, 127.09, 114.88, "random"]]#, [366.7, 80.84, 132.8, 181.84]]
+random_bboxes = [[150.66, 50.95, 120.09, 120.88, "random"]]#, [366.7, 80.84, 132.8, 181.84]]
 
 transformed = transform(image=image,
                         bboxes=bboxes,
@@ -122,9 +122,9 @@ transformed = transform(image=image,
 print(type(transformed['paste_image']))
 
 
-# visualize_2(
-#     transformed['image'],
-#     transformed['bboxes'],
-# )
+visualize_2(
+    transformed['image'],
+    transformed['bboxes'],
+)
 
 # %%

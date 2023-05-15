@@ -3,6 +3,7 @@ import random, os, cv2
 
 import numpy as np
 import pandas as pd
+import json
 
 from glob import glob
 
@@ -31,6 +32,7 @@ from warmup_scheduler import GradualWarmupScheduler
 
 from infrared_models.uiunet import UIUNET
 from auto_augment import AutoAugImageNetPolicy
+from copy_paste_aug.copy_paste import CopyPaste
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -143,7 +145,6 @@ def Augment(mode):
                                  brightness_by_max=True,p=0.5),
                           A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=30, 
                            val_shift_limit=0, p=0.5),
-                        #    AutoAugImageNetPolicy(),
                         #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
                         #   A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
@@ -151,10 +152,10 @@ def Augment(mode):
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
                           ]
         if CFG.use_vi_inf:
-            return A.Compose(train_aug_list,
+            return A.Compose(train_aug_list, #bbox_params=A.BboxParams(format="pascal_voc"),
                             additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
         else:
-            return A.Compose(train_aug_list)
+            return A.Compose(train_aug_list)#, bbox_params=A.BboxParams(format="pascal_voc"))
     else: # valid test
         valid_test_aug_list = [
                             # A.Resize(CFG.img_size, CFG.img_size),
@@ -165,29 +166,17 @@ def Augment(mode):
         else:
             return A.Compose(valid_test_aug_list)
 
+# %%
 class FOREST(Dataset):
     def __init__(self,
-                #  visible_folder,
-                #  infrared_folder,
-                #  mask_folder, 
-                #  generated_visible_folder,
-                #  generated_infrared_folder,
-                #  generated_mask_folder,
                  label_df,
                  preprocess_input=None,
                  mode = "train" # train | valid | test
                 ):
         
-        _label_df            = label_df
-        # self.label_df        = _label_df[_label_df["mode"] == mode]   
+        _label_df            = label_df  
         self.label_df        = _label_df
         self.mode            = mode
-        # self.visible_folder  = visible_folder
-        # self.infrared_folder = infrared_folder
-        # self.generated_visible_folder = generated_visible_folder
-        # self.generated_infrared_folder= generated_infrared_folder
-        # self.mask_folder     = mask_folder 
-        # self.generated_mask_folder = generated_mask_folder
         self.preprocess_input = preprocess_input
         self.augment         = Augment(mode)
         self.augment2        = Augment('valid')
@@ -195,7 +184,10 @@ class FOREST(Dataset):
                                 "grassland shrubland"    : 2,
                                 "smallholder agriculture": 3,
                                 "other"                  : 4}
-        
+
+        # f = open('./dataset/processed/boxes.json')
+        # self.box_dict = json.load(f)
+          
     def __len__(self):        
         return len(self.label_df)
         
@@ -204,14 +196,10 @@ class FOREST(Dataset):
         case_id, deforestation_type, lat, long, year, mode, data_path = self.label_df.iloc[index].to_list()
         
         # load image and mask
-        # visible  = cv2.imread(self.visible_folder  + str(case_id) + "/composite.png")
-        # infrared = cv2.imread(self.infrared_folder + str(case_id) + "/composite.png")
-        # mask     = cv2.imread(self.mask_folder     + str(case_id) + ".png", 0) if (self.mode != "test") else np.zeros(visible.shape[:2]) # dummy mask for test-set case.
-        
         visible  = cv2.imread(data_path + '/processed/visibles/'  + str(case_id) + "/composite.png")
         infrared = cv2.imread(data_path + '/processed/infrareds/' + str(case_id) + "/composite.png")
         mask     = cv2.imread(data_path + '/processed/masks/'     + str(case_id) + ".png", 0) if (self.mode != "test") else np.zeros(visible.shape[:2]) # dummy mask for test-set case.
-
+        
         # convert the foreground region in the mask to the corressponding label integer
         label = self.mask_dict[deforestation_type]
         
@@ -220,20 +208,45 @@ class FOREST(Dataset):
         #augment mask and image
         
         if CFG.use_vi_inf:
+            # visible, infrared, mask, _, _, _, _
             visible, infrared, mask = self.augment(image  = visible,
-                                                image2 = infrared,
-                                                mask   = mask).values()
-            if self.preprocess_input:
-                visible = self.preprocess_input(image = visible)['image']
-                infrared = self.preprocess_input(image = infrared)['image']
+                                                image2 = infrared, mask=mask).values()
 
             image = np.concatenate((visible, infrared), axis = -1)
         else:
+            # x_min, x_max, y_min, y_max      = self.box_dict[str(case_id)]
+            # if x_min == x_max:
+            #     x_max += 1
+            # if y_min == y_max:
+            #     y_max += 1
+            # box = [x_min,y_min,x_max,y_max, deforestation_type]
+            # data_size = self.__len__()
+            # random_idx = random.randint(0, data_size-1)
+            # random_case_id, random_deforestation_type, _, _, _, _, _ = self.label_df.iloc[random_idx].to_list()
+            # random_visible  = cv2.imread(data_path + '/processed/visibles/'  + str(random_case_id) + "/composite.png")
+            # random_mask     = cv2.imread(data_path + '/processed/masks/'     + str(random_case_id) + ".png", 0) if (self.mode != "test") else np.zeros(visible.shape[:2]) # dummy mask for test-set case.
+            # random_x_min, random_x_max, random_y_min, random_y_max = self.box_dict[str(random_case_id)]
+            # if random_x_min == random_x_max:
+            #     random_x_max+=1
+            # if random_y_min == random_y_max:
+            #     random_y_max += 1
+            # random_box = [random_x_min,random_y_min,random_x_max,random_y_max, random_deforestation_type]
+
+            # if self.mode == 'train':
+            #     visible, mask, _, _, _, _ = self.augment(image  = visible,
+            #                                         masks   = [mask],
+            #                                         bboxes = [box], 
+            #                                         paste_image=random_visible, 
+            #                                         # paste_image2=random_infrared,
+            #                                         paste_masks=[random_mask], 
+            #                                         paste_bboxes=[random_box]).values()
+            # else:
+            #     visible, mask = self.augment(image  = visible,
+            #                                         masks   = [mask],).values()
+
             visible, mask = self.augment(image  = visible,
                                                 mask   = mask).values()
 
-            if self.preprocess_input:
-                infrared = self.preprocess_input(image = infrared)['image']
             image = visible
 
         # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
@@ -288,22 +301,18 @@ label_df['data_folder'] = ['./dataset']*len(label_df)
 train_df = label_df[label_df['mode'] == 'train']
 val_df = label_df[label_df['mode'] == 'valid']
 
-print(train_df.head(5))
-print(val_df.head(5))
 # %%%
-train_dataset = FOREST(
-                    #     visible_folder, \
-                    #    infrared_folder, \
-                    #    mask_folder, \
-                       train_df, \
-                       mode = "train")
+train_dataset = FOREST(train_df, mode = "train")
 
-for i in range(0,100):
+for i in range(0,10):
     image, mask, *_ = train_dataset[i]
     visible = image[..., :3]
     
-    # show_image(visible, mask = mask)
-    # plt.show()
+    if CFG.use_vi_inf:
+        show_image(visible, mask = mask)
+    else:
+        show_image(visible, mask = mask[0])
+    plt.show()
 
 # %%
 # load models
@@ -331,8 +340,6 @@ elif CFG.seg_model_name == 'PAN':
         in_channels=num_channels,
         classes=CFG.num_class+1, 
     ).to(CFG.device)
-elif CFG.seg_model_name == "UIUNet":
-    model = model = UIUNET(in_ch=num_channels, out_ch=CFG.num_class+1).to(CFG.device)
 
 print(count_parameters(model))
 
@@ -436,30 +443,13 @@ def train(trainloader, validloader, model, fold=0,
 def train_epoch(trainloader, model):
         
     losses = []
-    iters = len(trainloader)
     
     for (inputs, targets, *_) in trainloader:
-        if isinstance(inputs, str):
-            print('hihi')
         # forward pass
-        if CFG.seg_model_name == 'UIUNet':
-            d0, d1, d2, d3, d4, d5, d6 = model(inputs.permute(0,-1,1,2).to(CFG.device))
-        else:
-            outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
+        outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
         targets = targets.long().to(CFG.device)
         # calculate loss
-        if CFG.seg_model_name == 'UIUNet':
-            loss0 = loss_fn(d0, targets)
-            # loss1 = loss_fn(d1, targets)
-            # loss2 = loss_fn(d2, targets)
-            # loss3 = loss_fn(d3, targets)
-            # loss4 = loss_fn(d4, targets)
-            # loss5 = loss_fn(d5, targets)
-            # loss6 = loss_fn(d6, targets)
-            # loss = (loss0 + loss1 + loss2 + loss3 + loss4 + loss5 + loss6)/7
-            loss = loss0
-        else:
-            loss = loss_fn(outputs, targets)
+        loss = loss_fn(outputs, targets)
 
         # backward pass and update weights
         optimizer.zero_grad()
@@ -484,32 +474,10 @@ def evaluate_epoch(validloader, model):
     scores = []
     loss = []
     for (inputs, targets, label, _) in validloader:
-        if CFG.seg_model_name == 'UIUNet':
-            d0, d1, d2, d3, d4, d5, d6 = model(inputs.permute(0,-1,1,2).to(CFG.device))
-            d0 = d0.detach().cpu()
-            # d1 = d1.detach().cpu()
-            # d2 = d2.detach().cpu()
-            # d3 = d3.detach().cpu()
-            # d4 = d4.detach().cpu()
-            # d5 = d5.detach().cpu()
-            # d6 = d6.detach().cpu()
-            outputs = d0
-        else:
-            outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
+        outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
         targets = targets.long()
         # calculate loss
-        if CFG.seg_model_name == 'UIUNet':
-            loss0 = loss_fn(d0, targets)
-            # loss1 = loss_fn(d1, targets)
-            # loss2 = loss_fn(d2, targets)
-            # loss3 = loss_fn(d3, targets)
-            # loss4 = loss_fn(d4, targets)
-            # loss5 = loss_fn(d5, targets)
-            # loss6 = loss_fn(d6, targets)
-            # val_loss = (loss0 + loss1 + loss2 + loss3 + loss4 + loss5 + loss6)/7
-            val_loss = loss0
-        else:
-            val_loss = loss_fn(outputs, targets)
+        val_loss = loss_fn(outputs, targets)
         #calculate dice
         score = hard_dice(outputs, targets, label)
         
@@ -530,14 +498,14 @@ label_df['data_folder'] = ['./dataset']*len(label_df)
 print(f"Size of original df: {len(label_df)}")
 print(label_df.head(5))
 
-generated_label_file = "./generated_dataset/processed/generated_label.csv"
+generated_label_file = "./generated_dataset/processed/new_label.csv"
 generated_label_df   = pd.read_csv(generated_label_file, index_col=0)
 generated_label_df['data_folder'] = ['./generated_dataset']*len(generated_label_df)
 print(generated_label_df.head(5))
 print(f"Size of generated df: {len(generated_label_df)}")
 
 # combine them together
-label_df = pd.concat([label_df, generated_label_df]).reset_index(drop=True)
+label_df = pd.concat([label_df.reset_index(drop=True), generated_label_df.reset_index(drop=True)])#.reset_index(drop=True)
 print(f"Size of combined df: {len(label_df)}")
 label_df.head(5)
 
@@ -545,7 +513,8 @@ label_df.head(5)
 # Train k-Fold
 # Split your dataset into K-folds
 kf = KFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
-# train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
+train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
+
 train_val_df = pd.read_csv("train_val_df.csv", index_col=0)
 train_val_df.tail(5)
 
@@ -558,9 +527,6 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
     train_df = train_val_df.iloc[train_idx].reset_index(drop=True)
     
     train_dataset = FOREST(train_df, mode='train')
-            # visible_folder,\
-            #   infrared_folder,\
-            #       mask_folder, \
                   
     train_loader = DataLoader(train_dataset, 
                                   batch_size=CFG.batch_size, 
@@ -571,9 +537,6 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
     # # validation
     val_df = train_val_df.iloc[val_idx].reset_index(drop=True)
     val_dataset = FOREST(val_df, mode='valid')
-        # visible_folder, 
-        # infrared_folder, 
-        # mask_folder, 
         
     valid_loader = DataLoader(val_dataset, 
                                 batch_size=1, 
@@ -593,13 +556,14 @@ infrared_folder = "./dataset/processed/infrareds/"
 mask_folder     = "./dataset/processed/masks/"
 label_file      = "./dataset/processed/label.csv"
 label_df        = pd.read_csv(label_file)
+label_df['data_folder'] = ['./dataset']*len(label_df)
 
 train_df = label_df[label_df['mode'] == 'train']
 val_df = label_df[label_df['mode'] == 'valid']
-train_dataset = FOREST(visible_folder, infrared_folder, mask_folder, train_df,
-                       mode = "train")
-valid_dataset = FOREST(visible_folder, infrared_folder, mask_folder, val_df,
-                       mode = "valid")
+
+train_dataset = FOREST(train_df, mode = "train")
+valid_dataset = FOREST(val_df, mode = "valid")
+
 print(f"Len of full train dataset: {len(train_dataset)}")
 print(f"Len of full valid dataset: {len(valid_dataset)}")
 # train_loader = DataLoader(train_dataset,
@@ -614,30 +578,25 @@ valid_loader = DataLoader(valid_dataset,
                           shuffle     = False,
                           pin_memory  = False)
 
-# Train one
-# model = train(train_loader, valid_loader, model,
-#               n_epoch = CFG.epochs)
-
-weight_dir = 'alpha07_weights/'
+weight_dir = 'copy_paste_weights/'
 weight_paths = os.listdir(weight_dir)
+# weight_paths = ['3_0.332_weights_dice_resnet101_UNetPlusPlus_1images.pth']
+weight_paths.sort(key=lambda x: x[0])
 weight_paths = [os.path.join(weight_dir, p) for p in weight_paths]
 
-accs_and_paths = []
 for path in weight_paths:
     model.load_state_dict(torch.load(path))
     model.eval()
     with torch.no_grad():    
         print(f"Inference model: {path}")
         valid_loss, valid_dice = evaluate_epoch(valid_loader, model)
-        print(f"Valid Loss: {valid_loss}, Valid Dice: {valid_dice}")
-        accs_and_paths.append([valid_dice, path])
-# %%
-accs_and_paths.sort(key=lambda x: x[0])
+        print(f"Valid Loss: {valid_loss}, Valid Dice: {valid_dice}, LB Score: {valid_dice-0.086}")
+
 # %%
 
 
 # %%
-# Submission
+#----------------SUBMISSION-------------------#
 # lets define mask to RLE conversion
 def rle_encode(mask_image):
     pixels = mask_image.flatten()
@@ -722,10 +681,11 @@ label_file      = "./dataset/processed/label.csv"
 label_df        = pd.read_csv(label_file)
 
 test_df = label_df[label_df["mode"].isin(['test'])]
+test_df['data_folder'] = ['./dataset']*len(test_df)
 test_df.head(10)
 
 # %%
-test_dataset = FOREST(visible_folder, infrared_folder, mask_folder, test_df,
+test_dataset = FOREST(test_df,
                       mode = "test")
 
 test_loader = DataLoader(test_dataset,
@@ -736,7 +696,7 @@ test_loader = DataLoader(test_dataset,
 
 # %%
 # load model
-model.load_state_dict(torch.load("./0.358_weights_dice_resnet101_UNetPlusPlus_2images.pth"))
+model.load_state_dict(torch.load("./copy_paste_weights/2_0.373_weights_dice_resnet101_UNetPlusPlus_2images.pth"))
 
 test_results = predict(model, test_loader)
 

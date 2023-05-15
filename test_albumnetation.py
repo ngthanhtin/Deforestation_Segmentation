@@ -83,16 +83,17 @@ from copy_paste_aug.copy_paste import CopyPaste
 import numpy as np
 
 transform = A.Compose(
-    [A.CenterCrop(height=280, width=280, p=1), 
-     CopyPaste(blend=True, sigma=1, pct_objects_paste=0.5, p=1)],
+    [#A.Resize(600, 600), 
+    #  A.CenterCrop(height=576, width=576, p=1), 
+     CopyPaste(blend=True, sigma=1, pct_objects_paste=1, p=1, max_paste_objects=1)],
     bbox_params=A.BboxParams(format='coco')#, min_visibility=0.3, label_fields=['category_ids']),
 )
 
 random.seed(7)
 
-image = cv2.imread("/home/tin/deforestation/dataset/processed/visibles/9684487/composite.png")
+image = cv2.imread("/home/tin/deforestation/dataset/processed/visibles/3847468/composite.png")
 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-mask = cv2.imread("/home/tin/deforestation/dataset/processed/masks/9684487.png", 0)
+mask = cv2.imread("/home/tin/deforestation/dataset/processed/masks/3847468.png", 0)
 h,w,_ = image.shape
 mask = np.zeros((h,w))
 mask[138:138+165, 5+147] = 1.
@@ -103,12 +104,12 @@ bboxes = [[5.66, 138.95, 147.09, 164.88, "smallholder" ]]#, [366.7, 80.84, 132.8
 # to visualize the class label for the bounding box on the image
 
 
-random_image = cv2.imread("/home/tin/deforestation/dataset/processed/visibles/3847468/composite.png")
+random_image = cv2.imread("/home/tin/deforestation/dataset/processed/visibles/9684487/composite.png")
 random_image = cv2.cvtColor(random_image, cv2.COLOR_BGR2RGB)
-random_mask = cv2.imread("/home/tin/deforestation/dataset/processed/masks/3847468.png", 0)
+random_mask = cv2.imread("/home/tin/deforestation/dataset/processed/masks/9684487.png", 0)
 h,w,_ = random_image.shape
 random_mask = np.zeros((h,w))
-random_mask[100:100+114, 3+127] = 2.
+random_mask[100:100+114, 3+127] = 1.
 
 random_bboxes = [[150.66, 50.95, 120.09, 120.88, "random"]]#, [366.7, 80.84, 132.8, 181.84]]
 
@@ -119,12 +120,22 @@ transformed = transform(image=image,
                         paste_masks=[random_mask],                 
                         paste_bboxes=random_bboxes,)
 
-print(type(transformed['paste_image']))
 
+print(np.array_equal(mask, transformed['masks'][0]))
+print(np.array_equal(image, transformed['image']))
+
+visualize_2(
+    image,
+    bboxes,
+)
 
 visualize_2(
     transformed['image'],
     transformed['bboxes'],
 )
 
+visualize_2(
+    random_image,
+    random_bboxes,
+)
 # %%

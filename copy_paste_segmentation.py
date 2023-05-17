@@ -95,8 +95,8 @@ def Large_Scale_Jittering(mask, img, min_scale=0.1, max_scale=2.0):
 
 
 def copy_paste(mask_src, img_src, mask_main, img_main, lsj=True):
-    # mask_src, img_src = random_flip_horizontal(mask_src, img_src)
-    # mask_main, img_main = random_flip_horizontal(mask_main, img_main)
+    mask_src, img_src = random_flip_horizontal(mask_src, img_src)
+    mask_main, img_main = random_flip_horizontal(mask_main, img_main)
 
     # LSJ， Large_Scale_Jittering
     if lsj:

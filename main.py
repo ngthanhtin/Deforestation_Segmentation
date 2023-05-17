@@ -31,7 +31,6 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealin
 from warmup_scheduler import GradualWarmupScheduler
 
 from infrared_models.uiunet import UIUNET
-from auto_augment import AutoAugImageNetPolicy
 from copy_paste_aug.copy_paste import CopyPaste
 
 import warnings
@@ -115,7 +114,7 @@ class CFG:
     num_class      = 4 # 4
     num_inputs     = 2 if use_vi_inf else 1
 
-    save_folder = 'copy_paste_weights/'
+    save_folder = 'copy_paste_weights_2/'
     save_weight_path     =  f'weights_dice_{encoder_name}_{seg_model_name}_{num_inputs}images.pth'
 
     device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
@@ -128,6 +127,12 @@ preprocessing_fn = lambda image : get_preprocessing_fn(encoder_name = CFG.encode
                                                        pretrained = 'imagenet')
 preprocessing_fn = None
 # %%
+
+# ==> Computing mean and std..
+# tensor([-1.3447, -1.3445, -1.3435]) tensor([0.4585, 0.4592, 0.4601])
+# ==> Computing mean and std..
+# tensor([-1.3855, -1.3853, -1.3849]) tensor([0.5228, 0.5225, 0.5224])
+
 def Augment(mode):
     if mode == "train":
         train_aug_list = [ #A.RandomScale(scale_limit=(0.0, 1.0), p=0.5), 
@@ -135,6 +140,7 @@ def Augment(mode):
                           A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
                           A.VerticalFlip(p=0.5),
+                        
                           A.ShiftScaleRotate(shift_limit=0, scale_limit=(-0.2,0.2), rotate_limit=(-30,30), 
                          interpolation=1, border_mode=0, value=(0,0,0), p=0.2), #
                           A.OneOf([ #
@@ -145,6 +151,7 @@ def Augment(mode):
                                  brightness_by_max=True,p=0.5),
                           A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=30, 
                            val_shift_limit=0, p=0.5),
+
                         #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
                         #   A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
@@ -160,6 +167,8 @@ def Augment(mode):
         valid_test_aug_list = [
                             # A.Resize(CFG.img_size, CFG.img_size),
                             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))]
+                            
+
         if CFG.use_vi_inf:
             return A.Compose(valid_test_aug_list,
                             additional_targets={'image2': 'image'})
@@ -330,7 +339,7 @@ if CFG.seg_model_name == "UNet":
 elif CFG.seg_model_name == "UNetPlusPlus":
     model = smp.UnetPlusPlus(
             encoder_name=CFG.encoder_name,      
-            encoder_weights="imagenet",     
+            encoder_weights="imagenet",
             in_channels=num_channels,     
             classes=CFG.num_class+1,).to(CFG.device)
 elif CFG.seg_model_name == 'PAN':
@@ -343,6 +352,15 @@ elif CFG.seg_model_name == 'PAN':
 
 print(count_parameters(model))
 
+# %%
+# for module in model.modules():
+#     # print(module)
+#     if isinstance(module, nn.BatchNorm2d):
+#         if hasattr(module, 'weight'):
+#             module.weight.requires_grad_(False)
+#         if hasattr(module, 'bias'):
+#             module.bias.requires_grad_(False)
+#         module.eval()
 # load model
 # model.load_state_dict(torch.load("./weights.pth"))
 
@@ -498,9 +516,9 @@ label_df['data_folder'] = ['./dataset']*len(label_df)
 print(f"Size of original df: {len(label_df)}")
 print(label_df.head(5))
 
-generated_label_file = "./generated_dataset/processed/new_label.csv"
+generated_label_file = "./generated_dataset_2/processed/new_label.csv"
 generated_label_df   = pd.read_csv(generated_label_file, index_col=0)
-generated_label_df['data_folder'] = ['./generated_dataset']*len(generated_label_df)
+generated_label_df['data_folder'] = ['./generated_dataset_2']*len(generated_label_df)
 print(generated_label_df.head(5))
 print(f"Size of generated df: {len(generated_label_df)}")
 
@@ -510,16 +528,58 @@ print(f"Size of combined df: {len(label_df)}")
 label_df.head(5)
 
 # %%
-# Train k-Fold
+def get_mean_and_std(dataset):
+    '''Compute the mean and std value of dataset.'''
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=2)
+    mean = torch.zeros(3)
+    std = torch.zeros(3)
+    print('==> Computing mean and std..')
+    for (inputs, targets, *_) in dataloader:
+    # for inputs, targets in dataloader:
+        for i in range(3):
+            mean[i] += inputs[:,i,:,:].mean()
+            std[i] += inputs[:,i,:,:].std()
+    mean.div_(len(dataset))
+    std.div_(len(dataset))
+    return mean, std
+# %%
+
 # Split your dataset into K-folds
 kf = KFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
-train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
-
-train_val_df = pd.read_csv("train_val_df.csv", index_col=0)
+# train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
+# train_val_df.to_csv("train_val_df_3.csv")
+train_val_df = pd.read_csv("train_val_df_2.csv", index_col=0)
 train_val_df.tail(5)
+
+# %%
+# Train Once
+train_df = train_val_df[train_val_df['mode'] == 'train']
+val_df = train_val_df[train_val_df['mode'] == 'valid']
+
+train_dataset = FOREST(train_df, mode = "train")
+valid_dataset = FOREST(val_df, mode = "valid")
+train_loader = DataLoader(train_dataset, 
+                                  batch_size=CFG.batch_size, 
+                                  num_workers=14, 
+                                  shuffle=True, 
+                                  pin_memory=True)
+valid_loader = DataLoader(valid_dataset, 
+                                batch_size=1, 
+                                num_workers=8, 
+                                shuffle=False,
+                                pin_memory=False)
+
+# mean, std = get_mean_and_std(train_dataset)
+# print(mean, std)
+# mean, std = get_mean_and_std(valid_dataset)
+# print(mean, std)
+
+model = train(train_loader, valid_loader, model, fold=4,
+              n_epoch = 12)
 
 
 #%%
+# Train k-Fold
 for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
     # if fold != CFG.train_fold:
     #     continue
@@ -578,7 +638,7 @@ valid_loader = DataLoader(valid_dataset,
                           shuffle     = False,
                           pin_memory  = False)
 
-weight_dir = 'copy_paste_weights/'
+weight_dir = 'copy_paste_weights_3/'
 weight_paths = os.listdir(weight_dir)
 # weight_paths = ['3_0.332_weights_dice_resnet101_UNetPlusPlus_1images.pth']
 weight_paths.sort(key=lambda x: x[0])
@@ -591,8 +651,6 @@ for path in weight_paths:
         print(f"Inference model: {path}")
         valid_loss, valid_dice = evaluate_epoch(valid_loader, model)
         print(f"Valid Loss: {valid_loss}, Valid Dice: {valid_dice}, LB Score: {valid_dice-0.086}")
-
-# %%
 
 
 # %%
@@ -696,7 +754,7 @@ test_loader = DataLoader(test_dataset,
 
 # %%
 # load model
-model.load_state_dict(torch.load("./copy_paste_weights/2_0.373_weights_dice_resnet101_UNetPlusPlus_2images.pth"))
+model.load_state_dict(torch.load("./copy_paste_weights_3/4_0.316_weights_dice_resnet101_UNetPlusPlus_2images.pth"))
 
 test_results = predict(model, test_loader)
 

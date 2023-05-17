@@ -6,7 +6,8 @@ from copy_paste_segmentation import copy_paste
 from PIL import Image
 
 # GENERATED FOLDER
-GENERATED_FOLDER = 'generated_dataset/'
+GENERATED_FOLDER = 'generated_dataset_3/'
+NUM_SAMPLES = 200
 if not os.path.exists(GENERATED_FOLDER):
     os.makedirs(GENERATED_FOLDER)
     os.makedirs(f'{GENERATED_FOLDER}/processed/visibles/')
@@ -23,7 +24,7 @@ label_path = os.path.join(orig_data_path, 'label.csv')
 
 label_df = pd.read_csv(label_path)
 train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
-train_val_df = train_val_df.sample(n=50)
+train_val_df = train_val_df.sample(n=NUM_SAMPLES)
 train_val_df = train_val_df.reset_index(drop=True)
 print(len(train_val_df[train_val_df['mode'] == 'train']))
 print(len(train_val_df[train_val_df['mode'] == 'valid']))
@@ -33,12 +34,15 @@ train_val_df.head(10)
 #%%
 data_size
 #%%
-new_label_dict = {'id':[], 'merged_label':[], 'latitude':[], 'longtitude':[], 'year':[], 'mode':[]}
+new_label_dict = {'id':[], 'merged_label':[], 'latitude':[], 'longitude':[], 'year':[], 'mode':[]}
 
 for i in range(data_size):
     # src sample
-    src_case_id, src_deforestation_type, _, _, _, _ = train_val_df.iloc[i].to_list()
-
+    src_case_id, src_deforestation_type, _, _, _, src_mode = train_val_df.iloc[i].to_list()
+    if src_mode == 'valid':
+        continue
+    if src_deforestation_type not in ['grassland shrubland', "other"]:
+        continue
     src_visible  = cv2.imread(visible_folder + f"/{str(src_case_id)}/composite.png")
     src_infrared = cv2.imread(infrared_folder + f"/{str(src_case_id)}/composite.png")
     src_mask     = cv2.imread(mask_folder + f"/{str(src_case_id)}.png", 0)
@@ -52,13 +56,15 @@ for i in range(data_size):
         main_case_id, main_deforestation_type, main_lat, main_long, main_year, main_mode = train_val_df.iloc[j].to_list()
         if src_deforestation_type != main_deforestation_type:
             continue
+        if main_mode == 'valid':
+            continue
         main_visible  = cv2.imread(visible_folder + f"/{str(main_case_id)}/composite.png")
         main_infrared = cv2.imread(infrared_folder + f"/{str(main_case_id)}/composite.png")
         main_mask     = cv2.imread(mask_folder + f"/{str(main_case_id)}.png", 0)
 
         # Copy-Paste data augmentation
-        mask, generated_visible = copy_paste(src_mask, src_visible, main_mask, main_visible, lsj=False)
-        mask, generated_infrared = copy_paste(src_mask, src_infrared, main_mask, src_infrared, lsj=False)
+        mask, generated_visible = copy_paste(src_mask, src_visible, main_mask, main_visible, lsj=True)
+        mask, generated_infrared = copy_paste(src_mask, src_infrared, main_mask, src_infrared, lsj=True)
 
         #
         new_case_id = f'{main_case_id}_{src_case_id}'

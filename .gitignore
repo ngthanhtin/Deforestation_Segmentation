@@ -5,3 +5,4 @@ dataset/*.zip
 .vscode
 *.csv
 __pycache__/
+generated_dataset_2/

@@ -30,7 +30,7 @@ from matplotlib.patches import Rectangle
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
 from warmup_scheduler import GradualWarmupScheduler
 
-from infrared_models.uiunet import UIUNET
+from infrared_models.abcseg import Small_Segmentation_Model
 from copy_paste_aug.copy_paste import CopyPaste
 
 import warnings
@@ -93,8 +93,9 @@ def get_scheduler(cfg, optimizer):
 # %%
 # Config
 class CFG:
-    encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008
-    seg_model_name = 'UNetPlusPlus' # UNetPlusPlus, UIUNet, UNet, PAN
+    encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
+    seg_model_name = 'UNetPlusPlus' # UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    activation     = None #softmax2d, sigmoid, softmax
 
     ensemble       = False
     use_vi_inf     = True
@@ -117,7 +118,7 @@ class CFG:
     save_folder = 'copy_paste_weights_2/'
     save_weight_path     =  f'weights_dice_{encoder_name}_{seg_model_name}_{num_inputs}images.pth'
 
-    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -127,11 +128,6 @@ preprocessing_fn = lambda image : get_preprocessing_fn(encoder_name = CFG.encode
                                                        pretrained = 'imagenet')
 preprocessing_fn = None
 # %%
-
-# ==> Computing mean and std..
-# tensor([-1.3447, -1.3445, -1.3435]) tensor([0.4585, 0.4592, 0.4601])
-# ==> Computing mean and std..
-# tensor([-1.3855, -1.3853, -1.3849]) tensor([0.5228, 0.5225, 0.5224])
 
 def Augment(mode):
     if mode == "train":
@@ -193,9 +189,19 @@ class FOREST(Dataset):
                                 "grassland shrubland"    : 2,
                                 "smallholder agriculture": 3,
                                 "other"                  : 4}
+        
+        #
+        self.pix_counts = np.array([0., 0., 0., 0.])
 
-        # f = open('./dataset/processed/boxes.json')
-        # self.box_dict = json.load(f)
+        if mode == 'train':
+            counts = np.array([1/self.label_df['merged_label'].value_counts()['plantation'],
+                                1/self.label_df['merged_label'].value_counts()['grassland shrubland'],
+                                1/self.label_df['merged_label'].value_counts()['smallholder agriculture'],
+                                1/self.label_df['merged_label'].value_counts()['other'],
+                                ])
+            self.pix_counts += counts
+
+        self.weights = [] if mode == 'val' else np.max(self.pix_counts) / self.pix_counts
           
     def __len__(self):        
         return len(self.label_df)
@@ -214,8 +220,6 @@ class FOREST(Dataset):
         
         mask[mask == 1.] = label
         
-        #augment mask and image
-        
         if CFG.use_vi_inf:
             # visible, infrared, mask, _, _, _, _
             visible, infrared, mask = self.augment(image  = visible,
@@ -223,46 +227,12 @@ class FOREST(Dataset):
 
             image = np.concatenate((visible, infrared), axis = -1)
         else:
-            # x_min, x_max, y_min, y_max      = self.box_dict[str(case_id)]
-            # if x_min == x_max:
-            #     x_max += 1
-            # if y_min == y_max:
-            #     y_max += 1
-            # box = [x_min,y_min,x_max,y_max, deforestation_type]
-            # data_size = self.__len__()
-            # random_idx = random.randint(0, data_size-1)
-            # random_case_id, random_deforestation_type, _, _, _, _, _ = self.label_df.iloc[random_idx].to_list()
-            # random_visible  = cv2.imread(data_path + '/processed/visibles/'  + str(random_case_id) + "/composite.png")
-            # random_mask     = cv2.imread(data_path + '/processed/masks/'     + str(random_case_id) + ".png", 0) if (self.mode != "test") else np.zeros(visible.shape[:2]) # dummy mask for test-set case.
-            # random_x_min, random_x_max, random_y_min, random_y_max = self.box_dict[str(random_case_id)]
-            # if random_x_min == random_x_max:
-            #     random_x_max+=1
-            # if random_y_min == random_y_max:
-            #     random_y_max += 1
-            # random_box = [random_x_min,random_y_min,random_x_max,random_y_max, random_deforestation_type]
-
-            # if self.mode == 'train':
-            #     visible, mask, _, _, _, _ = self.augment(image  = visible,
-            #                                         masks   = [mask],
-            #                                         bboxes = [box], 
-            #                                         paste_image=random_visible, 
-            #                                         # paste_image2=random_infrared,
-            #                                         paste_masks=[random_mask], 
-            #                                         paste_bboxes=[random_box]).values()
-            # else:
-            #     visible, mask = self.augment(image  = visible,
-            #                                         masks   = [mask],).values()
+            
 
             visible, mask = self.augment(image  = visible,
                                                 mask   = mask).values()
 
             image = visible
-
-        # if deforestation_type == 'grassland shrubland' or deforestation_type == 'other':
-        # else:
-        #     visible, infrared, mask = self.augment2(image  = visible,
-        #                                         image2 = infrared,
-        #                                         mask   = mask).values()
         
         return torch.tensor(image), torch.tensor(mask), label, case_id
 
@@ -321,7 +291,7 @@ for i in range(0,10):
         show_image(visible, mask = mask)
     else:
         show_image(visible, mask = mask[0])
-    plt.show()
+    # plt.show()
 
 # %%
 # load models
@@ -335,20 +305,33 @@ if CFG.seg_model_name == "UNet":
     model = smp.Unet(encoder_name    = CFG.encoder_name,
                     encoder_weights = "imagenet",
                     in_channels     = num_channels,
-                    classes         = CFG.num_class+1).to(CFG.device)
+                    classes         = CFG.num_class+1,
+                    activation=CFG.activation).to(CFG.device)
 elif CFG.seg_model_name == "UNetPlusPlus":
     model = smp.UnetPlusPlus(
             encoder_name=CFG.encoder_name,      
             encoder_weights="imagenet",
             in_channels=num_channels,     
-            classes=CFG.num_class+1,).to(CFG.device)
+            classes=CFG.num_class+1,
+            activation=CFG.activation).to(CFG.device)
 elif CFG.seg_model_name == 'PAN':
     model = smp.PAN(
         encoder_name=CFG.encoder_name, 
         encoder_weights='imagenet', 
         in_channels=num_channels,
         classes=CFG.num_class+1, 
+        activation=CFG.activation,
     ).to(CFG.device)
+elif CFG.seg_model_name == 'DeepLabV3Plus':
+    model = smp.DeepLabV3Plus(
+    encoder_name=CFG.encoder_name, 
+    encoder_weights='imagenet', 
+    in_channels=num_channels,
+    classes=CFG.num_class+1, 
+    activation=CFG.activation,
+    ).to(CFG.device)
+elif CFG.seg_model_name == 'Small_Model':
+    model = Small_Segmentation_Model(n_classes=5, channels=6).to(CFG.device)
 
 print(count_parameters(model))
 
@@ -433,8 +416,14 @@ loss_fn = TverskyLoss
 CFG.init_lr = 0.0005
 # optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
 optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
-# learning rate scheduler
+# # learning rate scheduler
 scheduler = get_scheduler(CFG, optimizer)
+
+# optimizer = torch.optim.Adam(params=model.parameters(),
+#                                  lr=1e-4,
+#                                  weight_decay=1e-3)
+# scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer,
+#                                                        gamma=0.95)
 
 # %%
 def train(trainloader, validloader, model, fold=0,
@@ -516,51 +505,46 @@ label_df['data_folder'] = ['./dataset']*len(label_df)
 print(f"Size of original df: {len(label_df)}")
 print(label_df.head(5))
 
-generated_label_file = "./generated_dataset_2/processed/new_label.csv"
-generated_label_df   = pd.read_csv(generated_label_file, index_col=0)
-generated_label_df['data_folder'] = ['./generated_dataset_2']*len(generated_label_df)
-print(generated_label_df.head(5))
-print(f"Size of generated df: {len(generated_label_df)}")
-
-# combine them together
-label_df = pd.concat([label_df.reset_index(drop=True), generated_label_df.reset_index(drop=True)])#.reset_index(drop=True)
-print(f"Size of combined df: {len(label_df)}")
-label_df.head(5)
-
 # %%
-def get_mean_and_std(dataset):
-    '''Compute the mean and std value of dataset.'''
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=2)
-    mean = torch.zeros(3)
-    std = torch.zeros(3)
-    print('==> Computing mean and std..')
-    for (inputs, targets, *_) in dataloader:
-    # for inputs, targets in dataloader:
-        for i in range(3):
-            mean[i] += inputs[:,i,:,:].mean()
-            std[i] += inputs[:,i,:,:].std()
-    mean.div_(len(dataset))
-    std.div_(len(dataset))
-    return mean, std
+# generated_label_file = "./generated_dataset_2/processed/new_label.csv"
+# generated_label_df   = pd.read_csv(generated_label_file, index_col=0)
+# generated_label_df['data_folder'] = ['./generated_dataset_2']*len(generated_label_df)
+# print(generated_label_df.head(5))
+# print(f"Size of generated df: {len(generated_label_df)}")
+
+# # combine them together
+# label_df = pd.concat([label_df.reset_index(drop=True), generated_label_df.reset_index(drop=True)])#.reset_index(drop=True)
+# print(f"Size of combined df: {len(label_df)}")
+# label_df.head(5)
+
 # %%
 
 # Split your dataset into K-folds
 kf = KFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
 # train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
 # train_val_df.to_csv("train_val_df_3.csv")
-train_val_df = pd.read_csv("train_val_df_2.csv", index_col=0)
-train_val_df.tail(5)
+# train_val_df = pd.read_csv("train_val_df_2.csv", index_col=0)
+# train_val_df.tail(5)
+train_val_df = label_df
 
 # %%
 # Train Once
+print(len(train_val_df))
 train_df = train_val_df[train_val_df['mode'] == 'train']
 val_df = train_val_df[train_val_df['mode'] == 'valid']
 
 train_dataset = FOREST(train_df, mode = "train")
 valid_dataset = FOREST(val_df, mode = "valid")
+
+# get the weights between classes
+from torch.utils.data.sampler import WeightedRandomSampler
+weights = torch.FloatTensor(train_dataset.weights)
+sampler = WeightedRandomSampler(weights, len(weights))
+
+# data loader
 train_loader = DataLoader(train_dataset, 
                                   batch_size=CFG.batch_size, 
-                                  num_workers=14, 
+                                  num_workers=14,# sampler=sampler,
                                   shuffle=True, 
                                   pin_memory=True)
 valid_loader = DataLoader(valid_dataset, 
@@ -569,10 +553,7 @@ valid_loader = DataLoader(valid_dataset,
                                 shuffle=False,
                                 pin_memory=False)
 
-# mean, std = get_mean_and_std(train_dataset)
-# print(mean, std)
-# mean, std = get_mean_and_std(valid_dataset)
-# print(mean, std)
+
 
 model = train(train_loader, valid_loader, model, fold=4,
               n_epoch = 12)
@@ -754,7 +735,7 @@ test_loader = DataLoader(test_dataset,
 
 # %%
 # load model
-model.load_state_dict(torch.load("./copy_paste_weights_3/4_0.316_weights_dice_resnet101_UNetPlusPlus_2images.pth"))
+model.load_state_dict(torch.load("./copy_paste_weights_2/4_0.330_weights_dice_resnet101_UNetPlusPlus_2images.pth"))
 
 test_results = predict(model, test_loader)
 

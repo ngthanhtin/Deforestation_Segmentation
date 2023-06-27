@@ -28,10 +28,7 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
-from warmup_scheduler import GradualWarmupScheduler
 
-from infrared_models.abcseg import Small_Segmentation_Model
-from copy_paste_aug.copy_paste import CopyPaste
 
 import warnings
 warnings.filterwarnings("ignore")

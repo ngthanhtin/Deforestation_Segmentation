@@ -1,16 +1,5 @@
 # %% Download pretrained models
 # !gdown 1EyaZVdbezIJsj8LviM7GaIBto46a1N-Z
-# !gdown 1L8NYh3LOSGf7xNm7TsZVXURbYYfeJVKh
-# !gdown 1m8fsG812o6KotF1NVo0YuiSfSn18TAOA
-# !gdown 1d3wU8KNjPL4EqMCIEO_rO-O3-REpG82T
-# !gdown 1BUtU42moYrOFbsMCE-LTTkUE-mrWnfG2
-# !gdown 1d7I50jVjtCddnhpf-lqj8-f13UyCzoW1
-# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b0.pth mit_b0_mmseg.pth
-# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b1.pth mit_b1_mmseg.pth
-# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b2.pth mit_b2_mmseg.pth
-# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b3.pth mit_b3_mmseg.pth
-# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b4.pth mit_b4_mmseg.pth
-# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b5.pth mit_b5_mmseg.pth
 # %%
 import random, os, cv2
 
@@ -313,7 +302,7 @@ model_cfg = dict(
         drop_rate=0.0,
         attn_drop_rate=0.0,
         drop_path_rate=0.1,
-        init_cfg = dict(type="Pretrained", checkpoint="mit_b4_mmseg.pth")),
+        init_cfg = dict(type="Pretrained", checkpoint="mit_b0_mmseg.pth")),
     decode_head=dict(
         type='SegformerHead',
         in_channels=[64, 128, 320, 512],
@@ -323,10 +312,10 @@ model_cfg = dict(
         num_classes=CFG.num_class + 1,
         norm_cfg=norm_cfg,
         align_corners=False,
-        loss_decode=dict(type='DiceLoss', use_sigmoid=False, loss_weight=1.0)),
-        # loss_decode=[
-        #     dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
-        #     dict(type='DiceLoss', use_sigmoid=False, loss_weight=3.0)],
+        # loss_decode=dict(type='DiceLoss', use_sigmoid=False, loss_weight=1.0)),
+        loss_decode=[
+            dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
+            dict(type='DiceLoss', use_sigmoid=False, loss_weight=3.0)]),
     # model training and testing settings
     train_cfg=dict(),
     test_cfg=dict(mode='whole'))
@@ -615,7 +604,7 @@ valid_loader = DataLoader(valid_dataset,
                           shuffle     = False,
                           pin_memory  = False)
 
-weight_dir = 'copy_paste_weights_3/'
+weight_dir = 'segformer_weights/'
 weight_paths = os.listdir(weight_dir)
 # weight_paths = ['3_0.332_weights_dice_resnet101_UNetPlusPlus_1images.pth']
 weight_paths.sort(key=lambda x: x[0])
@@ -632,6 +621,7 @@ for path in weight_paths:
 
 # %%
 #----------------SUBMISSION-------------------#
+
 # lets define mask to RLE conversion
 def rle_encode(mask_image):
     pixels = mask_image.flatten()
@@ -652,7 +642,7 @@ def predict(model, loader):
         
         # forward pass       
         pred = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
-
+        pred = F.interpolate(pred, (320, 320))
         # move back to cpu
         pred     = pred.detach().cpu()
         image_id = str(image_id[0].item())
@@ -729,9 +719,66 @@ test_loader = DataLoader(test_dataset,
                          shuffle     = False,
                          pin_memory  = False)
 
+#predict
+COLORMAP = [
+    [0, 0, 0],
+    [128, 0, 0],
+    [0, 128, 0],
+    [128, 128, 0],
+    [0, 0, 128],
+    [128, 0, 128],
+    [0, 128, 128],
+    [128, 128, 128],
+    [64, 0, 0],
+    [192, 0, 0],
+    [64, 128, 0],
+]
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+        
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Normalized image.
+        """
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+            # The normalize code -> t.sub_(m).div_(s)
+        return tensor
+    
+unorm = UnNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+
+import random
+id = random.randint(0, 100)
+with torch.no_grad():
+    model.eval()
+    x, y = test_dataset.__getitem__(id)
+    y_predict = model.forward(x.unsqueeze(0).to(CFG.device)).argmax(dim=1).squeeze().cpu().numpy()
+    # print(np.unique(y_predict))
+    # print(y_predict.shape)
+    for i in np.unique(y_predict).tolist():
+        print(i)
+    color_mask_predict = np.zeros((*y_predict.shape, 3))
+    for i, color in enumerate(COLORMAP):
+        color_mask_predict[y_predict==i] = np.array(color)
+    color_mask = np.zeros((*y_predict.shape, 3))
+    for i, color in enumerate(COLORMAP):
+        color_mask[y==i] = np.array(color)
+    plt.subplot(1,3,1)
+    plt.imshow(unorm(x).permute(1, 2, 0))
+    plt.subplot(1,3,2)
+    plt.imshow(color_mask)
+    plt.subplot(1,3,3)
+    plt.imshow(color_mask_predict)
+    plt.show()
+
 # %%
 # load model
-model.load_state_dict(torch.load("./copy_paste_weights_2/4_0.330_weights_dice_resnet101_UNetPlusPlus_2images.pth"))
+model.load_state_dict(torch.load("./segformer_weights/4_0.311_weights_dice_segformer_segformer_2images.pth"))
 
 test_results = predict(model, test_loader)
 

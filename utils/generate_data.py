@@ -2,7 +2,7 @@
 import pandas as pd
 import cv2, os
 import numpy as np
-from copy_paste_segmentation import copy_paste
+from Indonesia_Deforestation_Segmentation.utils.copy_paste_segmentation import copy_paste
 from PIL import Image
 
 # GENERATED FOLDER

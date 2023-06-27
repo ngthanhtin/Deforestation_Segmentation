@@ -28,9 +28,7 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
-from warmup_scheduler import GradualWarmupScheduler
 
-from copy_paste_aug.copy_paste import CopyPaste
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -49,41 +47,18 @@ def set_seed(seed=None, cudnn_deterministic=True):
     torch.backends.cudnn.benchmark = False
 
 # %%
-class GradualWarmupSchedulerV2(GradualWarmupScheduler):
-    """
-    https://www.kaggle.com/code/underwearfitting/single-fold-training-of-resnet200d-lb0-965
-    """
-    def __init__(self, optimizer, multiplier, total_epoch, after_scheduler=None):
-        super(GradualWarmupSchedulerV2, self).__init__(
-            optimizer, multiplier, total_epoch, after_scheduler)
-
-    def get_lr(self):
-        if self.last_epoch > self.total_epoch:
-            if self.after_scheduler:
-                if not self.finished:
-                    self.after_scheduler.base_lrs = [
-                        base_lr * self.multiplier for base_lr in self.base_lrs]
-                    self.finished = True
-                return self.after_scheduler.get_lr()
-            return [base_lr * self.multiplier for base_lr in self.base_lrs]
-        if self.multiplier == 1.0:
-            return [base_lr * (float(self.last_epoch) / self.total_epoch) for base_lr in self.base_lrs]
-        else:
-            return [base_lr * ((self.multiplier - 1.) * self.last_epoch / self.total_epoch + 1.) for base_lr in self.base_lrs]
-
 def get_scheduler(cfg, optimizer):
     scheduler = None
     if cfg.scheduler == 'ReduceLROnPlateau':
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=1e-7, eps=1e-08)
     elif cfg.scheduler == 'CosineAnnealingLR':
-        scheduler_cosine = CosineAnnealingLR(optimizer, 
+        scheduler = CosineAnnealingLR(optimizer, 
                                          T_0 = CFG.epochs, 
                                          T_mult=1, 
                                          eta_min=1e-7, 
                                          last_epoch=-1, 
                                          verbose=False)
-        scheduler = GradualWarmupSchedulerV2(
-            optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
+        
     elif cfg.scheduler == 'CosineAnnealingWarmRestarts':
         scheduler = CosineAnnealingWarmRestarts(optimizer,T_0=cfg.T_0, 
                                                              eta_min=cfg.min_lr)

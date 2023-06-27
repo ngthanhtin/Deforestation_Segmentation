@@ -1,3 +1,16 @@
+# %% Download pretrained models
+# !gdown 1EyaZVdbezIJsj8LviM7GaIBto46a1N-Z
+# !gdown 1L8NYh3LOSGf7xNm7TsZVXURbYYfeJVKh
+# !gdown 1m8fsG812o6KotF1NVo0YuiSfSn18TAOA
+# !gdown 1d3wU8KNjPL4EqMCIEO_rO-O3-REpG82T
+# !gdown 1BUtU42moYrOFbsMCE-LTTkUE-mrWnfG2
+# !gdown 1d7I50jVjtCddnhpf-lqj8-f13UyCzoW1
+# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b0.pth mit_b0_mmseg.pth
+# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b1.pth mit_b1_mmseg.pth
+# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b2.pth mit_b2_mmseg.pth
+# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b3.pth mit_b3_mmseg.pth
+# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b4.pth mit_b4_mmseg.pth
+# !python mmsegmentation/tools/model_converters/mit2mmseg.py mit_b5.pth mit_b5_mmseg.pth
 # %%
 import random, os, cv2
 
@@ -79,7 +92,7 @@ class CFG:
     init_lr        = 0.0005
     min_lr         = 1e-6
     T_0            = 25
-    batch_size     = 16
+    batch_size     = 8
     weight_decay   = 1e-6
     
     seed           = 42
@@ -92,7 +105,7 @@ class CFG:
     save_folder = 'segformer_weights/'
     save_weight_path     =  f'weights_dice_{encoder_name}_{seg_model_name}_{num_inputs}images.pth'
 
-    device         = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -307,11 +320,13 @@ model_cfg = dict(
         in_index=[0, 1, 2, 3],
         channels=256,
         dropout_ratio=0.1,
-        num_classes=21,
+        num_classes=CFG.num_class + 1,
         norm_cfg=norm_cfg,
         align_corners=False,
-        loss_decode=dict(
-            type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
+        loss_decode=dict(type='DiceLoss', use_sigmoid=False, loss_weight=1.0)),
+        # loss_decode=[
+        #     dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
+        #     dict(type='DiceLoss', use_sigmoid=False, loss_weight=3.0)],
     # model training and testing settings
     train_cfg=dict(),
     test_cfg=dict(mode='whole'))
@@ -323,17 +338,6 @@ model.init_weights()
 
 print(count_parameters(model))
 
-# %%
-# for module in model.modules():
-#     # print(module)
-#     if isinstance(module, nn.BatchNorm2d):
-#         if hasattr(module, 'weight'):
-#             module.weight.requires_grad_(False)
-#         if hasattr(module, 'bias'):
-#             module.bias.requires_grad_(False)
-#         module.eval()
-# load model
-# model.load_state_dict(torch.load("./weights.pth"))
 
 # %%
 def dice_loss(logits, true, eps=1e-7):
@@ -441,7 +445,8 @@ def train_epoch(trainloader, model):
     
     for (inputs, targets, *_) in trainloader:
         # forward pass
-        outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
+        outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
+        outputs = F.interpolate(outputs, (320, 320))
         targets = targets.long().to(CFG.device)
         # calculate loss
         loss = loss_fn(outputs, targets)
@@ -469,7 +474,8 @@ def evaluate_epoch(validloader, model):
     scores = []
     loss = []
     for (inputs, targets, label, _) in validloader:
-        outputs = model(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
+        outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
+        outputs = F.interpolate(outputs, (320, 320))
         targets = targets.long()
         # calculate loss
         val_loss = loss_fn(outputs, targets)
@@ -549,34 +555,36 @@ model = train(train_loader, valid_loader, model, fold=4,
 
 #%%
 # Train k-Fold
-for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
-    # if fold != CFG.train_fold:
-    #     continue
-    
-    train_df = train_val_df.iloc[train_idx].reset_index(drop=True)
-    
-    train_dataset = FOREST(train_df, mode='train')
-                  
-    train_loader = DataLoader(train_dataset, 
-                                  batch_size=CFG.batch_size, 
-                                  num_workers=14, 
-                                  shuffle=True, 
-                                  pin_memory=True)
-    
-    # # validation
-    val_df = train_val_df.iloc[val_idx].reset_index(drop=True)
-    val_dataset = FOREST(val_df, mode='valid')
+train_kfold = False
+if train_kfold:
+    for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
+        # if fold != CFG.train_fold:
+        #     continue
         
-    valid_loader = DataLoader(val_dataset, 
-                                batch_size=1, 
-                                num_workers=8, 
-                                shuffle=False,
-                                pin_memory=False)
-    
-    model = train(train_loader, valid_loader, model, fold=fold,
-              n_epoch = CFG.epochs)
-    
-    print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')
+        train_df = train_val_df.iloc[train_idx].reset_index(drop=True)
+        
+        train_dataset = FOREST(train_df, mode='train')
+                    
+        train_loader = DataLoader(train_dataset, 
+                                    batch_size=CFG.batch_size, 
+                                    num_workers=14, 
+                                    shuffle=True, 
+                                    pin_memory=True)
+        
+        # # validation
+        val_df = train_val_df.iloc[val_idx].reset_index(drop=True)
+        val_dataset = FOREST(val_df, mode='valid')
+            
+        valid_loader = DataLoader(val_dataset, 
+                                    batch_size=1, 
+                                    num_workers=8, 
+                                    shuffle=False,
+                                    pin_memory=False)
+        
+        model = train(train_loader, valid_loader, model, fold=fold,
+                n_epoch = CFG.epochs)
+        
+        print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')
 
 # %%
 # Test on real validation set

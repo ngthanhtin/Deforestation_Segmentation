@@ -175,7 +175,7 @@ def build_model(CFG, model_name):
                 drop_rate=0.0,
                 attn_drop_rate=0.0,
                 drop_path_rate=0.1,
-                init_cfg = dict(type="Pretrained", checkpoint="mit_b5_mmseg.pth")),
+                init_cfg = dict(type="Pretrained", checkpoint="segformer_checkpoints/mit_b5_mmseg.pth")),
             decode_head=dict(
                 type='SegformerHead',
                 in_channels=[64, 128, 320, 512],
@@ -494,4 +494,4 @@ if CFG.submission:
 
     df_submission = pd.DataFrame.from_dict(test_results)
 
-    df_submission.to_csv("my_submission.csv", index = False)
+    df_submission.to_csv("results/my_submission.csv", index = False)

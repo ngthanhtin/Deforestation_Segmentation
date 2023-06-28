@@ -92,7 +92,7 @@ class CFG:
     
     seed           = 42
     n_fold         = 4
-    train_kfold    = False
+    train_kfold    = True
     train_fold     = [0]
 
     num_class      = 4 # 4
@@ -102,8 +102,7 @@ class CFG:
     save_folder    = f'results/{seg_model_name}_weights_{str(datetime.now().strftime("%m_%d_%Y-%H:%M:%S"))}/'
     save_weight_path     =  f'weights_{seg_model_name}_{num_inputs}_images_{use_meta}_meta.pth'
 
-    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
-    submission     = False
+    device         = torch.device('cuda:6' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -333,7 +332,7 @@ elif CFG.seg_model_name == "UNetPlusPlus":
             classes=CFG.num_class+1,
             activation=CFG.activation).to(CFG.device)
 
-model.load_state_dict(torch.load("./results/segformer_weights_06_28_2023-13:13:38/-1_0.363_weights_segformer_2_images_False_meta.pth"))
+# model.load_state_dict(torch.load("./results/segformer_weights_06_28_2023-13:13:38/-1_0.363_weights_segformer_2_images_False_meta.pth"))
 print(count_parameters(model))
 
 
@@ -540,7 +539,7 @@ train_val_df = label_df
 
 # %%
 # Train Once
-print(len(train_val_df))
+train_val_df = train_val_df[~train_val_df['mode'].isin(['test'])]
 train_df = train_val_df[train_val_df['mode'] == 'train']
 val_df = train_val_df[train_val_df['mode'] == 'valid']
 
@@ -574,7 +573,6 @@ if CFG.train_kfold:
         #     continue
         
         train_df = train_val_df.iloc[train_idx].reset_index(drop=True)
-        
         train_dataset = FOREST(train_df, mode='train')
                     
         train_loader = DataLoader(train_dataset, 

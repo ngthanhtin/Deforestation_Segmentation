@@ -71,10 +71,10 @@ class CFG:
     num_inputs     = 2 if use_vi_inf else 1
     use_meta       = False
 
-    load_weight_folder = 'results/segformer_weights_06_28_2023-13:13:38/'
-    specific_weight_file = '-1_0.363_weights_segformer_2_images_False_meta.pth'
+    load_weight_folder = 'results/segformer_weights_06_28_2023-14:34:27/'
+    specific_weight_file = '-1_0.366_weights_segformer_2_images_False_meta.pth'
     device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
-    submission     = False
+    submission     = True
 
 set_seed(CFG.seed)
 
@@ -497,10 +497,10 @@ class EnsembleModel(nn.Module):
 # %%
 # load model
 if CFG.submission:
-    model.load_state_dict(torch.load("./segformer_weights/4_0.361_weights_dice_segformer_segformer_2images.pth"))
+    model.load_state_dict(torch.load(f'{CFG.load_weight_folder}/{CFG.specific_weight_file}'))
 
     test_results = predict(model, test_loader)
 
     df_submission = pd.DataFrame.from_dict(test_results)
 
-    df_submission.to_csv("results/my_submission.csv", index = False)
+    df_submission.to_csv(f"{CFG.load_weight_folder}/my_submission.csv", index = False)

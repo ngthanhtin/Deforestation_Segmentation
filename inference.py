@@ -56,7 +56,7 @@ class CFG:
     label_file      = "./dataset/processed/label_remove_small_pixels.csv"
 
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'segformer' # UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    seg_model_name = 'UNetPlusPlus' # UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
     ensemble       = False
@@ -71,8 +71,8 @@ class CFG:
     num_inputs     = 2 if use_vi_inf else 1
     use_meta       = False
 
-    load_weight_folder = 'results/segformer_weights_06_28_2023-09:37:41/'
-    specific_weight_file = None
+    load_weight_folder = 'results/UNetPlusPlus_weights_06_28_2023-11:46:36/'
+    specific_weight_file = '-1_0.353_weights_UNetPlusPlus_2_images_False_meta.pth'
     device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
     submission     = False
 
@@ -156,9 +156,18 @@ print(f"Number of channels: {num_channels}")
 def build_model(CFG, model_name):
     if model_name == 'segformer':
         #model settings
+        from importlib import import_module
+        module = import_module(f'mmseg.utils')
+        module.register_all_modules(True)
+
         norm_cfg = dict(type='BN', requires_grad=True)
         model_cfg = dict(
             type='EncoderDecoder',
+            # data_preprocessor=dict(
+            # type='SegDataPreProcessor',
+            # bgr_to_rgb=True,
+            # pad_val=0,
+            # seg_pad_val=0),
             pretrained=None,
             backbone=dict(
                 type='MixVisionTransformer',

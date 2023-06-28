@@ -1,11 +1,10 @@
-# %% Download pretrained models
-# !gdown 1EyaZVdbezIJsj8LviM7GaIBto46a1N-Z
 # %%
 import random, os, cv2
 
 import numpy as np
 import pandas as pd
 import json
+from datetime import datetime
 
 from glob import glob
 
@@ -69,11 +68,17 @@ def get_scheduler(cfg, optimizer):
 # %%
 # Config
 class CFG:
-    encoder_name   = 'segformer' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'segformer' # UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    visible_folder  = "./dataset/processed/visibles/"
+    infrared_folder = "./dataset/processed/infrareds/"
+    mask_folder     = "./dataset/processed/masks/"
+    label_file      = "./dataset/processed/label_remove_small_pixels.csv"
+
+    encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
+    seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
     ensemble       = False
+    cutmix         = False
     use_vi_inf     = True
     img_size       = 320
     scheduler      = "CosineAnnealingWarmRestarts" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
@@ -86,15 +91,18 @@ class CFG:
     
     seed           = 42
     n_fold         = 4
+    train_kfold    = False
     train_fold     = [0]
 
     num_class      = 4 # 4
     num_inputs     = 2 if use_vi_inf else 1
+    use_meta       = False
 
-    save_folder = 'segformer_weights/'
-    save_weight_path     =  f'weights_dice_{encoder_name}_{seg_model_name}_{num_inputs}images.pth'
+    save_folder    = f'results/{seg_model_name}_weights_{str(datetime.now().strftime("%m_%d_%Y-%H:%M:%S"))}/'
+    save_weight_path     =  f'weights_{seg_model_name}_{num_inputs}_images_{use_meta}_meta.pth'
 
     device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
+    submission     = False
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -109,7 +117,7 @@ def Augment(mode):
     if mode == "train":
         train_aug_list = [ #A.RandomScale(scale_limit=(0.0, 1.0), p=0.5), 
                           A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
-                          A.RandomRotate90(p=0.2),
+                        #   A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
                           A.VerticalFlip(p=0.5),
                         
@@ -127,9 +135,9 @@ def Augment(mode):
                         #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
                         #   A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
-                        # CopyPaste(blend=True, sigma=1, pct_objects_paste=0.5, p=1),
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
                           ]
+
         if CFG.use_vi_inf:
             return A.Compose(train_aug_list, #bbox_params=A.BboxParams(format="pascal_voc"),
                             additional_targets={'image2': 'image'}) # this is to augment both the normal and infrared sattellite images.
@@ -154,9 +162,7 @@ class FOREST(Dataset):
                  preprocess_input=None,
                  mode = "train" # train | valid | test
                 ):
-        
-        _label_df            = label_df  
-        self.label_df        = _label_df
+        self.label_df        = label_df
         self.mode            = mode
         self.preprocess_input = preprocess_input
         self.augment         = Augment(mode)
@@ -165,19 +171,6 @@ class FOREST(Dataset):
                                 "grassland shrubland"    : 2,
                                 "smallholder agriculture": 3,
                                 "other"                  : 4}
-        
-        #
-        self.pix_counts = np.array([0., 0., 0., 0.])
-
-        if mode == 'train':
-            counts = np.array([1/self.label_df['merged_label'].value_counts()['plantation'],
-                                1/self.label_df['merged_label'].value_counts()['grassland shrubland'],
-                                1/self.label_df['merged_label'].value_counts()['smallholder agriculture'],
-                                1/self.label_df['merged_label'].value_counts()['other'],
-                                ])
-            self.pix_counts += counts
-
-        self.weights = [] if mode == 'val' else np.max(self.pix_counts) / self.pix_counts
           
     def __len__(self):        
         return len(self.label_df)
@@ -246,28 +239,24 @@ def show_image(image,
 
 # %%
 # Show Images
-visible_folder  = "./dataset/processed/visibles/"
-infrared_folder = "./dataset/processed/infrareds/"
-mask_folder     = "./dataset/processed/masks/"
-label_file      = "./dataset/processed/label.csv"
-
-label_df = pd.read_csv(label_file)
+label_df = pd.read_csv(CFG.label_file)
 label_df['data_folder'] = ['./dataset']*len(label_df)
 train_df = label_df[label_df['mode'] == 'train']
 val_df = label_df[label_df['mode'] == 'valid']
-
+len(train_df), len(val_df)
 # %%%
 train_dataset = FOREST(train_df, mode = "train")
 
-for i in range(0,10):
-    image, mask, *_ = train_dataset[i]
+for i in range(0,15):
+    image, mask, _, case_id = train_dataset[i]
     visible = image[..., :3]
     
+    print(case_id, torch.mean(mask.float()))
     if CFG.use_vi_inf:
         show_image(visible, mask = mask)
     else:
         show_image(visible, mask = mask[0])
-    # plt.show()
+    plt.show()
 
 # %%
 # load models
@@ -277,53 +266,87 @@ def count_parameters(model):
 num_channels = 3+3 if CFG.use_vi_inf else 3
 print(f"Number of channels: {num_channels}")
 
-#load data
-batch_size = 24
-n_workers = os.cpu_count()
-print("num_workers =", n_workers)
 
-#model settings
-norm_cfg = dict(type='BN', requires_grad=True)
-model_cfg = dict(
-    type='EncoderDecoder',
-    pretrained=None,
-    backbone=dict(
-        type='MixVisionTransformer',
+if CFG.seg_model_name == 'segformer':
+    #model settings
+    from importlib import import_module
+    module = import_module(f'mmseg.utils')
+    module.register_all_modules(True)
+
+    norm_cfg = dict(type='BN', requires_grad=True)
+    model_cfg = dict(
+        type='EncoderDecoder',
+        # data_preprocessor=dict(
+        #     type='SegDataPreProcessor',
+        #     bgr_to_rgb=True,
+        #     pad_val=0,
+        #     seg_pad_val=0),
+        pretrained=None,
+        backbone=dict(
+            type='MixVisionTransformer',
+            in_channels=num_channels,
+            embed_dims=64,
+            num_stages=4,
+            num_layers=[3, 8, 27, 3],
+            num_heads=[1, 2, 5, 8],
+            patch_sizes=[7, 3, 3, 3],
+            sr_ratios=[8, 4, 2, 1],
+            out_indices=(0, 1, 2, 3),
+            mlp_ratio=4,
+            qkv_bias=True,
+            drop_rate=0.0,
+            attn_drop_rate=0.0,
+            drop_path_rate=0.1,
+            init_cfg = dict(type="Pretrained", checkpoint="segformer_checkpoints/mit_b5_mmseg.pth")),
+        decode_head=dict(
+            type='SegformerHead',
+            in_channels=[64, 128, 320, 512],
+            in_index=[0, 1, 2, 3],
+            channels=256,
+            dropout_ratio=0.1,
+            num_classes=CFG.num_class + 1,
+            norm_cfg=norm_cfg,
+            align_corners=False,
+            # loss_decode=dict(type='DiceLoss', use_sigmoid=False, loss_weight=1.0)),
+            loss_decode=[
+                dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
+                dict(type='DiceLoss', use_sigmoid=False, loss_weight=3.0)]),
+        # model training and testing settings
+        train_cfg=dict(),
+        test_cfg=dict(mode='whole'))
+
+    from mmseg.models import build_segmentor
+    model = build_segmentor(model_cfg).to(CFG.device)
+    model.init_weights()
+elif CFG.seg_model_name == "UNet":
+    model = smp.Unet(encoder_name    = CFG.encoder_name,
+                    encoder_weights = "imagenet",
+                    in_channels     = num_channels,
+                    classes         = CFG.num_class+1,
+                    activation=CFG.activation).to(CFG.device)
+elif CFG.seg_model_name == "UNetPlusPlus":
+    model = smp.UnetPlusPlus(
+            encoder_name=CFG.encoder_name,      
+            encoder_weights="imagenet",
+            in_channels=num_channels,     
+            classes=CFG.num_class+1,
+            activation=CFG.activation).to(CFG.device)
+elif CFG.seg_model_name == 'PAN':
+    model = smp.PAN(
+        encoder_name=CFG.encoder_name, 
+        encoder_weights='imagenet', 
         in_channels=num_channels,
-        embed_dims=64,
-        num_stages=4,
-        num_layers=[3, 8, 27, 3],
-        num_heads=[1, 2, 5, 8],
-        patch_sizes=[7, 3, 3, 3],
-        sr_ratios=[8, 4, 2, 1],
-        out_indices=(0, 1, 2, 3),
-        mlp_ratio=4,
-        qkv_bias=True,
-        drop_rate=0.0,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.1,
-        init_cfg = dict(type="Pretrained", checkpoint="mit_b0_mmseg.pth")),
-    decode_head=dict(
-        type='SegformerHead',
-        in_channels=[64, 128, 320, 512],
-        in_index=[0, 1, 2, 3],
-        channels=256,
-        dropout_ratio=0.1,
-        num_classes=CFG.num_class + 1,
-        norm_cfg=norm_cfg,
-        align_corners=False,
-        # loss_decode=dict(type='DiceLoss', use_sigmoid=False, loss_weight=1.0)),
-        loss_decode=[
-            dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
-            dict(type='DiceLoss', use_sigmoid=False, loss_weight=3.0)]),
-    # model training and testing settings
-    train_cfg=dict(),
-    test_cfg=dict(mode='whole'))
-
-from mmseg.models import build_segmentor
-model = build_segmentor(model_cfg).to(CFG.device)
-model.init_weights()
-
+        classes=CFG.num_class+1, 
+        activation=CFG.activation,
+    ).to(CFG.device)
+elif CFG.seg_model_name == 'DeepLabV3Plus':
+    model = smp.DeepLabV3Plus(
+    encoder_name=CFG.encoder_name, 
+    encoder_weights='imagenet', 
+    in_channels=num_channels,
+    classes=CFG.num_class+1, 
+    activation=CFG.activation,
+    ).to(CFG.device)
 
 print(count_parameters(model))
 
@@ -406,6 +429,30 @@ scheduler = get_scheduler(CFG, optimizer)
 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer,
 #                                                        gamma=0.95)
 
+# %% cut mix rand bbox
+def rand_bbox(size, lam, to_tensor=True):
+    W = size[-2]
+    H = size[-1]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+
+    #uniform
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    if to_tensor:
+        bbx1 = torch.tensor(bbx1)
+        bby1 = torch.tensor(bby1)
+        bbx2 = torch.tensor(bbx2)
+        bby2 = torch.tensor(bby2)
+
+    return bbx1, bby1, bbx2, bby2
 # %%
 def train(trainloader, validloader, model, fold=0,
           n_epoch = 10):
@@ -428,14 +475,23 @@ def train(trainloader, validloader, model, fold=0,
         
     return model
 
+# %%
 def train_epoch(trainloader, model):
         
     losses = []
     
     for (inputs, targets, *_) in trainloader:
         # forward pass
-        outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
-        outputs = F.interpolate(outputs, (320, 320))
+        if CFG.cutmix and random.random() > 0.4:
+            lam = np.random.beta(beta, beta)
+            rand_index = torch.randperm(inputs.size()[0])
+            bbx1, bby1, bbx2, bby2 = rand_bbox(inputs.size(), lam)    
+            inputs[:, bbx1:bbx2, bby1:bby2, :] = inputs[rand_index, bbx1:bbx2, bby1:bby2, :]
+            targets[:, bbx1:bbx2, bby1:bby2] = targets[rand_index, bbx1:bbx2, bby1:bby2]
+
+        outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device))
+        if CFG.seg_model_name == 'segformer':        
+            outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
         targets = targets.long().to(CFG.device)
         # calculate loss
         loss = loss_fn(outputs, targets)
@@ -458,13 +514,15 @@ def train_epoch(trainloader, model):
     
     return np.mean(losses)
 
+ # %%
 def evaluate_epoch(validloader, model):
     model.eval()
     scores = []
     loss = []
     for (inputs, targets, label, _) in validloader:
         outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
-        outputs = F.interpolate(outputs, (320, 320))
+        if CFG.seg_model_name == 'segformer':        
+            outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
         targets = targets.long()
         # calculate loss
         val_loss = loss_fn(outputs, targets)
@@ -477,17 +535,11 @@ def evaluate_epoch(validloader, model):
     return np.mean(loss), np.mean(scores)
 
 # %%
-visible_folder  = "./dataset/processed/visibles/"
-infrared_folder = "./dataset/processed/infrareds/"
-mask_folder     = "./dataset/processed/masks/"
-label_file      = "./dataset/processed/label.csv"
-label_df        = pd.read_csv(label_file)
-
-label_df = pd.read_csv(label_file)
+label_df = pd.read_csv(CFG.label_file)
 label_df['data_folder'] = ['./dataset']*len(label_df)
 print(f"Size of original df: {len(label_df)}")
 print(label_df.head(5))
-
+train_val_df = label_df
 # %%
 # generated_label_file = "./generated_dataset_2/processed/new_label.csv"
 # generated_label_df   = pd.read_csv(generated_label_file, index_col=0)
@@ -501,16 +553,6 @@ print(label_df.head(5))
 # label_df.head(5)
 
 # %%
-
-# Split your dataset into K-folds
-kf = KFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
-# train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
-# train_val_df.to_csv("train_val_df_3.csv")
-# train_val_df = pd.read_csv("train_val_df_2.csv", index_col=0)
-# train_val_df.tail(5)
-train_val_df = label_df
-
-# %%
 # Train Once
 print(len(train_val_df))
 train_df = train_val_df[train_val_df['mode'] == 'train']
@@ -518,11 +560,6 @@ val_df = train_val_df[train_val_df['mode'] == 'valid']
 
 train_dataset = FOREST(train_df, mode = "train")
 valid_dataset = FOREST(val_df, mode = "valid")
-
-# get the weights between classes
-from torch.utils.data.sampler import WeightedRandomSampler
-weights = torch.FloatTensor(train_dataset.weights)
-sampler = WeightedRandomSampler(weights, len(weights))
 
 # data loader
 train_loader = DataLoader(train_dataset, 
@@ -538,14 +575,18 @@ valid_loader = DataLoader(valid_dataset,
 
 
 
-model = train(train_loader, valid_loader, model, fold=4,
-              n_epoch = 12)
+model = train(train_loader, valid_loader, model, fold=-1, n_epoch = 12)
 
 
 #%%
 # Train k-Fold
-train_kfold = False
-if train_kfold:
+if CFG.train_kfold:
+    # Split your dataset into K-folds
+    kf = KFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
+    # train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
+    # train_val_df.to_csv("train_val_df_3.csv")
+    # train_val_df = pd.read_csv("train_val_df_2.csv", index_col=0)
+    # train_val_df.tail(5)
     for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
         # if fold != CFG.train_fold:
         #     continue
@@ -575,53 +616,9 @@ if train_kfold:
         
         print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')
 
-# %%
-# Test on real validation set
-visible_folder  = "./dataset/processed/visibles/"
-infrared_folder = "./dataset/processed/infrareds/"
-mask_folder     = "./dataset/processed/masks/"
-label_file      = "./dataset/processed/label.csv"
-label_df        = pd.read_csv(label_file)
-label_df['data_folder'] = ['./dataset']*len(label_df)
-
-train_df = label_df[label_df['mode'] == 'train']
-val_df = label_df[label_df['mode'] == 'valid']
-
-train_dataset = FOREST(train_df, mode = "train")
-valid_dataset = FOREST(val_df, mode = "valid")
-
-print(f"Len of full train dataset: {len(train_dataset)}")
-print(f"Len of full valid dataset: {len(valid_dataset)}")
-# train_loader = DataLoader(train_dataset,
-#                           batch_size  = CFG.batch_size,
-#                           num_workers = 14,
-#                           shuffle     = True, 
-#                           pin_memory  = True)
-
-valid_loader = DataLoader(valid_dataset,
-                          batch_size  = 1,
-                          num_workers = 8,
-                          shuffle     = False,
-                          pin_memory  = False)
-
-weight_dir = 'segformer_weights/'
-weight_paths = os.listdir(weight_dir)
-# weight_paths = ['3_0.332_weights_dice_resnet101_UNetPlusPlus_1images.pth']
-weight_paths.sort(key=lambda x: x[0])
-weight_paths = [os.path.join(weight_dir, p) for p in weight_paths]
-
-for path in weight_paths:
-    model.load_state_dict(torch.load(path))
-    model.eval()
-    with torch.no_grad():    
-        print(f"Inference model: {path}")
-        valid_loss, valid_dice = evaluate_epoch(valid_loader, model)
-        print(f"Valid Loss: {valid_loss}, Valid Dice: {valid_dice}, LB Score: {valid_dice-0.086}")
-
 
 # %%
 #----------------SUBMISSION-------------------#
-
 # lets define mask to RLE conversion
 def rle_encode(mask_image):
     pixels = mask_image.flatten()
@@ -642,7 +639,8 @@ def predict(model, loader):
         
         # forward pass       
         pred = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
-        pred = F.interpolate(pred, (320, 320))
+        if CFG.seg_model_name == 'segformer':
+            pred = F.interpolate(pred, (320, 320), mode = 'bilinear')
         # move back to cpu
         pred     = pred.detach().cpu()
         image_id = str(image_id[0].item())
@@ -658,28 +656,7 @@ def predict(model, loader):
         
     return test_results
 
-# class EnsembleModel(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-#         self.model = nn.ModuleList()
-#         for fold in [1, 2, 3]:
-#             _model = build_model(CFG, weight=None)
-#             #_model.to(device)
-
-#             model_path = f'/{CFG.train_fold}/Unet_fold{fold}_best.pth'
-#             state = torch.load(model_path)['model']
-#             _model.load_state_dict(state)
-#             _model.eval()
-
-#             self.model.append(_model)
-    
-#     def forward(self, x):
-#         output=[]
-#         for m in self.model:
-#             output.append(m(x))
-#         output=torch.stack(output,dim=0).mean(0)
-#         return output
-
+# %%
 # import tensor_comprehensions as tc
 # def TTA(x:tc.Tensor,model:nn.Module):
 #     #x.shape=(batch,c,h,w)
@@ -699,90 +676,27 @@ def predict(model, loader):
 #         return x
     
 # %%
-visible_folder  = "./dataset/processed/visibles/"
-infrared_folder = "./dataset/processed/infrareds/"
-mask_folder     = "./dataset/processed/masks/"
-label_file      = "./dataset/processed/label.csv"
-label_df        = pd.read_csv(label_file)
-
-test_df = label_df[label_df["mode"].isin(['test'])]
-test_df['data_folder'] = ['./dataset']*len(test_df)
-test_df.head(10)
-
-# %%
-test_dataset = FOREST(test_df,
-                      mode = "test")
-
-test_loader = DataLoader(test_dataset,
-                         batch_size  = 1,
-                         num_workers = 14,
-                         shuffle     = False,
-                         pin_memory  = False)
-
-#predict
-COLORMAP = [
-    [0, 0, 0],
-    [128, 0, 0],
-    [0, 128, 0],
-    [128, 128, 0],
-    [0, 0, 128],
-    [128, 0, 128],
-    [0, 128, 128],
-    [128, 128, 128],
-    [64, 0, 0],
-    [192, 0, 0],
-    [64, 128, 0],
-]
-class UnNormalize(object):
-    def __init__(self, mean, std):
-        self.mean = mean
-        self.std = std
-        
-    def __call__(self, tensor):
-        """
-        Args:
-            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
-        Returns:
-            Tensor: Normalized image.
-        """
-        for t, m, s in zip(tensor, self.mean, self.std):
-            t.mul_(s).add_(m)
-            # The normalize code -> t.sub_(m).div_(s)
-        return tensor
-    
-unorm = UnNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
-
-import random
-id = random.randint(0, 100)
-with torch.no_grad():
-    model.eval()
-    x, y = test_dataset.__getitem__(id)
-    y_predict = model.forward(x.unsqueeze(0).to(CFG.device)).argmax(dim=1).squeeze().cpu().numpy()
-    # print(np.unique(y_predict))
-    # print(y_predict.shape)
-    for i in np.unique(y_predict).tolist():
-        print(i)
-    color_mask_predict = np.zeros((*y_predict.shape, 3))
-    for i, color in enumerate(COLORMAP):
-        color_mask_predict[y_predict==i] = np.array(color)
-    color_mask = np.zeros((*y_predict.shape, 3))
-    for i, color in enumerate(COLORMAP):
-        color_mask[y==i] = np.array(color)
-    plt.subplot(1,3,1)
-    plt.imshow(unorm(x).permute(1, 2, 0))
-    plt.subplot(1,3,2)
-    plt.imshow(color_mask)
-    plt.subplot(1,3,3)
-    plt.imshow(color_mask_predict)
-    plt.show()
-
-# %%
 # load model
-model.load_state_dict(torch.load("./segformer_weights/4_0.311_weights_dice_segformer_segformer_2images.pth"))
+if CFG.submission:
+    label_file      = "./dataset/processed/label.csv"
+    label_df        = pd.read_csv(label_file)
 
-test_results = predict(model, test_loader)
+    test_df = label_df[label_df["mode"].isin(['test'])]
+    test_df['data_folder'] = ['./dataset']*len(test_df)
 
-df_submission = pd.DataFrame.from_dict(test_results)
+    test_dataset = FOREST(test_df,
+                        mode = "test")
 
-df_submission.to_csv("my_submission.csv", index = False)
-# %%
+    test_loader = DataLoader(test_dataset,
+                            batch_size  = 1,
+                            num_workers = 14,
+                            shuffle     = False,
+                            pin_memory  = False)
+    
+    model.load_state_dict(torch.load("./segformer_weights/4_0.361_weights_dice_segformer_segformer_2images.pth"))
+
+    test_results = predict(model, test_loader)
+
+    df_submission = pd.DataFrame.from_dict(test_results)
+
+    df_submission.to_csv("my_submission.csv", index = False)

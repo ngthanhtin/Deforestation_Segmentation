@@ -9,3 +9,4 @@ generated_dataset_2/
 copy_paste_aug/
 copy_paste_aug_repo/
 mmsegmentation/
+results/

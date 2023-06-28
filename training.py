@@ -61,7 +61,7 @@ def get_scheduler(cfg, optimizer):
                                          verbose=False)
         
     elif cfg.scheduler == 'CosineAnnealingWarmRestarts':
-        scheduler = CosineAnnealingWarmRestarts(optimizer,T_0=cfg.T_0, 
+        scheduler = CosineAnnealingWarmRestarts(optimizer,T_0=cfg.T_0,
                                                              eta_min=cfg.min_lr)
     return scheduler
 
@@ -85,7 +85,8 @@ class CFG:
     epochs         = 10
     init_lr        = 0.0005
     min_lr         = 1e-6
-    T_0            = 25
+    T_0            = 9
+    T_mult         = 1
     batch_size     = 8
     weight_decay   = 1e-6
     
@@ -331,23 +332,8 @@ elif CFG.seg_model_name == "UNetPlusPlus":
             in_channels=num_channels,     
             classes=CFG.num_class+1,
             activation=CFG.activation).to(CFG.device)
-elif CFG.seg_model_name == 'PAN':
-    model = smp.PAN(
-        encoder_name=CFG.encoder_name, 
-        encoder_weights='imagenet', 
-        in_channels=num_channels,
-        classes=CFG.num_class+1, 
-        activation=CFG.activation,
-    ).to(CFG.device)
-elif CFG.seg_model_name == 'DeepLabV3Plus':
-    model = smp.DeepLabV3Plus(
-    encoder_name=CFG.encoder_name, 
-    encoder_weights='imagenet', 
-    in_channels=num_channels,
-    classes=CFG.num_class+1, 
-    activation=CFG.activation,
-    ).to(CFG.device)
 
+model.load_state_dict(torch.load("./results/segformer_weights_06_28_2023-13:13:38/-1_0.363_weights_segformer_2_images_False_meta.pth"))
 print(count_parameters(model))
 
 
@@ -574,8 +560,8 @@ valid_loader = DataLoader(valid_dataset,
                                 pin_memory=False)
 
 
-
-model = train(train_loader, valid_loader, model, fold=-1, n_epoch = 12)
+if not CFG.train_kfold:
+    model = train(train_loader, valid_loader, model, fold=-1, n_epoch = 12)
 
 
 #%%
@@ -583,10 +569,6 @@ model = train(train_loader, valid_loader, model, fold=-1, n_epoch = 12)
 if CFG.train_kfold:
     # Split your dataset into K-folds
     kf = KFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
-    # train_val_df = label_df[label_df["mode"].isin(['train', 'valid'])]
-    # train_val_df.to_csv("train_val_df_3.csv")
-    # train_val_df = pd.read_csv("train_val_df_2.csv", index_col=0)
-    # train_val_df.tail(5)
     for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
         # if fold != CFG.train_fold:
         #     continue
@@ -674,29 +656,3 @@ def predict(model, loader):
 #         x=model(x)
 #         x=torch.sigmoid(x)
 #         return x
-    
-# %%
-# load model
-if CFG.submission:
-    label_file      = "./dataset/processed/label.csv"
-    label_df        = pd.read_csv(label_file)
-
-    test_df = label_df[label_df["mode"].isin(['test'])]
-    test_df['data_folder'] = ['./dataset']*len(test_df)
-
-    test_dataset = FOREST(test_df,
-                        mode = "test")
-
-    test_loader = DataLoader(test_dataset,
-                            batch_size  = 1,
-                            num_workers = 14,
-                            shuffle     = False,
-                            pin_memory  = False)
-    
-    model.load_state_dict(torch.load("./segformer_weights/4_0.361_weights_dice_segformer_segformer_2images.pth"))
-
-    test_results = predict(model, test_loader)
-
-    df_submission = pd.DataFrame.from_dict(test_results)
-
-    df_submission.to_csv("my_submission.csv", index = False)

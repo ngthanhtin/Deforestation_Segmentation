@@ -52,7 +52,7 @@ def set_seed(seed=None, cudnn_deterministic=True):
 def get_scheduler(cfg, optimizer):
     scheduler = None
     if cfg.scheduler == 'ReduceLROnPlateau':
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=1e-7, eps=1e-08)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=1e-5, eps=1e-08)
     elif cfg.scheduler == 'CosineAnnealingLR':
         scheduler = CosineAnnealingLR(optimizer, 
                                          T_0 = CFG.epochs, 
@@ -78,11 +78,10 @@ class CFG:
     seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
-    ensemble       = False
     cutmix         = False
     use_vi_inf     = True
     img_size       = 320
-    scheduler      = None #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
+    scheduler      = "ReduceLROnPlateau" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
     epochs         = 10
     init_lr        = 0.0001
     min_lr         = 1e-6
@@ -103,7 +102,7 @@ class CFG:
     save_folder    = f'results/{seg_model_name}_weights_{str(datetime.now().strftime("%m_%d_%Y-%H:%M:%S"))}/'
     save_weight_path     =  f'weights_{seg_model_name}_{num_inputs}_images_{use_meta}_meta.pth'
 
-    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:6' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -278,11 +277,6 @@ if CFG.seg_model_name == 'segformer':
     norm_cfg = dict(type='BN', requires_grad=True)
     model_cfg = dict(
         type='EncoderDecoder',
-        # data_preprocessor=dict(
-        #     type='SegDataPreProcessor',
-        #     bgr_to_rgb=True,
-        #     pad_val=0,
-        #     seg_pad_val=0),
         pretrained=None,
         backbone=dict(
             type='MixVisionTransformer',
@@ -450,6 +444,14 @@ def train(trainloader, validloader, model, fold=0,
                 best_valid_dice = valid_dice
                 torch.save(model.state_dict(), f"./{CFG.save_folder}/{fold}_{valid_dice:.3f}_{CFG.save_weight_path}")
         
+        match CFG.scheduler:
+            case 'ReduceLROnPlateau':
+                scheduler.step(valid_loss) # 
+            case 'CosineAnnealingLR': #
+                scheduler.step()
+            case 'CosineAnnealingWarmRestarts': #
+                scheduler.step()
+
     return model
 
 # %%
@@ -477,15 +479,6 @@ def train_epoch(trainloader, model):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        
-        match CFG.scheduler:
-            case 'ReduceLROnPlateau':
-                scheduler.step(loss) # 
-            case 'CosineAnnealingLR': #
-                scheduler.step()
-            case 'CosineAnnealingWarmRestarts': #
-                scheduler.step()
-
 
         losses.append(loss.item())
     
@@ -505,7 +498,7 @@ def evaluate_epoch(validloader, model):
         val_loss = loss_fn(outputs, targets)
         #calculate dice
         score = hard_dice(outputs, targets, label)
-        
+
         loss.append(val_loss.item())
         scores.append(score)
     
@@ -589,20 +582,3 @@ if CFG.train_kfold:
         print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')
 
 # %%
-# import tensor_comprehensions as tc
-# def TTA(x:tc.Tensor,model:nn.Module):
-#     #x.shape=(batch,c,h,w)
-#     if CFG.TTA:
-#         shape=x.shape
-#         x=[x,*[tc.rot90(x,k=i,dims=(-2,-1)) for i in range(1,4)]]
-#         x=tc.cat(x,dim=0)
-#         x=model(x)
-#         x=torch.sigmoid(x)
-#         x=x.reshape(4,shape[0],*shape[2:])
-#         x=[tc.rot90(x[i],k=-i,dims=(-2,-1)) for i in range(4)]
-#         x=tc.stack(x,dim=0)
-#         return x.mean(0)
-#     else :
-#         x=model(x)
-#         x=torch.sigmoid(x)
-#         return x

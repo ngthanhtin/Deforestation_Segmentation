@@ -57,13 +57,14 @@ class CFG:
     label_file      = "./dataset/processed/label_remove_small_pixels.csv"
 
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'UNetPlusPlus' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
     ensemble       = True
     ensemble_model_names = ['segformer', 'UNetPlusPlus']
     ensemble_model_paths = ['./results/segformer_weights_06_29_2023-10:49:17/-1_0.342_weights_segformer_2_images_False_meta.pth',\
-                'results/UNetPlusPlus_weights_06_29_2023-10:31:25/-1_0.330_weights_UNetPlusPlus_2_images_False_meta.pth']
+                # 'results/UNetPlusPlus_weights_06_29_2023-10:31:25/-1_0.330_weights_UNetPlusPlus_2_images_False_meta.pth']
+                './results/0.261_0.358_weights_dice_resnet101_UNetPlusPlus_2images.pth']
 
     use_vi_inf     = True
     img_size       = 320
@@ -76,12 +77,13 @@ class CFG:
     num_inputs     = 2 if use_vi_inf else 1
     use_meta       = False
 
-    load_weight_folder = 'results/UNetPlusPlus_weights_06_29_2023-10:31:25/'
-    specific_weight_file = '-1_0.336_weights_UNetPlusPlus_2_images_False_meta.pth'
+    load_weight_folder = 'results/segformer_weights_06_29_2023-10:49:17/'
+    specific_weight_file = '-1_0.342_weights_segformer_2_images_False_meta.pth'
     device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
     submission     = True
     visualize      = False
     eval           = True
+    TTA            = True
 
 set_seed(CFG.seed)
 
@@ -170,11 +172,6 @@ def build_model(CFG, model_name):
         norm_cfg = dict(type='BN', requires_grad=True)
         model_cfg = dict(
             type='EncoderDecoder',
-            # data_preprocessor=dict(
-            # type='SegDataPreProcessor',
-            # bgr_to_rgb=True,
-            # pad_val=0,
-            # seg_pad_val=0),
             pretrained=None,
             backbone=dict(
                 type='MixVisionTransformer',
@@ -226,25 +223,37 @@ def build_model(CFG, model_name):
                 in_channels=num_channels,     
                 classes=CFG.num_class+1,
                 activation=CFG.activation).to(CFG.device)
-    elif model_name == 'PAN':
-        model = smp.PAN(
-            encoder_name=CFG.encoder_name, 
-            encoder_weights='imagenet', 
-            in_channels=num_channels,
-            classes=CFG.num_class+1, 
-            activation=CFG.activation,
-        ).to(CFG.device)
-    elif model_name == 'DeepLabV3Plus':
-        model = smp.DeepLabV3Plus(
-        encoder_name=CFG.encoder_name, 
-        encoder_weights='imagenet', 
-        in_channels=num_channels,
-        classes=CFG.num_class+1, 
-        activation=CFG.activation,
-        ).to(CFG.device)
     
     return model
 
+# %% test time augmentation
+import albumentations as A
+
+identity_trfm = A.Lambda(image = lambda x,cols=None,rows=None : x)
+# Affine transforms
+horizontal_flip = A.HorizontalFlip(p = 1.0)
+vertical_flip = A.VerticalFlip(p = 1.0)
+rotate_cw = A.Rotate(limit = (-90, -90), p = 1.0)
+rotate_acw = A.Rotate(limit = (90, 90), p = 1.0)
+
+# Pixel level transformations
+pixel_level_trfms = A.OneOf([
+                    A.HueSaturationValue(10,15,10),
+                    A.CLAHE(clip_limit=2),
+                    A.RandomBrightnessContrast(),            
+                   ], p = 1.0)
+
+# List of augmentations for TTA
+tta_augs = [identity_trfm,
+            horizontal_flip,
+            vertical_flip,
+            rotate_cw]
+
+# List of deaugmentations corresponding to the above aug list
+tta_deaugs = [None,
+              horizontal_flip,
+              vertical_flip,
+              rotate_acw]
 # %%
 class EnsembleModel(nn.Module):
     def __init__(self, model_names, model_paths):
@@ -264,31 +273,43 @@ class EnsembleModel(nn.Module):
     def forward(self, x):
         output=[]
         for m, model_name in zip(self.models, self.model_names):
-            output_ = m(x)
-            if model_name == 'segformer':
-                output_ = F.interpolate(output_, (320, 320), mode = 'bilinear')
+            if CFG.TTA and model_name != 'segformer':
+                tta_pred = None
+                inputs = x.permute(2,3,1,0).squeeze()
+                inputs = inputs.detach().cpu().numpy()
+                
+                for j, tta_aug in enumerate(tta_augs):
+                    # Augmentation    
+                    aug_img = tta_aug(image = inputs)['image']
+                    aug_img = torch.tensor(aug_img)
+                    aug_img = aug_img.unsqueeze(0)
+
+                    with torch.no_grad():
+                        outputs = m(aug_img.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
+                        if CFG.seg_model_name == 'segformer' and not CFG.ensemble:        
+                            outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
+                        # Deaugmentation
+                        outputs = outputs.permute(2,3,1,0).squeeze()
+                        outputs = outputs.detach().cpu().numpy()
+                        if tta_deaugs[j] is not None:
+                            outputs = tta_deaugs[j](image = inputs, 
+                                                mask = outputs)['mask']          
+
+                        if tta_pred is None:
+                            tta_pred = outputs
+                        else:       
+                            tta_pred += outputs
+                output_ = tta_pred / len(tta_augs)
+                output_ = torch.tensor(output_).unsqueeze(0).permute(0,-1,1,2).to(CFG.device)
+            else:
+                output_ = m(x)
+                if model_name == 'segformer':
+                    output_ = F.interpolate(output_, (320, 320), mode = 'bilinear')
             output.append(output_)
         output=torch.stack(output,dim=0).mean(0)
 
         return output
 
-# import tensor_comprehensions as tc
-# def TTA(x:tc.Tensor,model:nn.Module):
-#     #x.shape=(batch,c,h,w)
-#     if CFG.TTA:
-#         shape=x.shape
-#         x=[x,*[tc.rot90(x,k=i,dims=(-2,-1)) for i in range(1,4)]]
-#         x=tc.cat(x,dim=0)
-#         x=model(x)
-#         x=torch.sigmoid(x)
-#         x=x.reshape(4,shape[0],*shape[2:])
-#         x=[tc.rot90(x[i],k=-i,dims=(-2,-1)) for i in range(4)]
-#         x=tc.stack(x,dim=0)
-#         return x.mean(0)
-#     else :
-#         x=model(x)
-#         x=torch.sigmoid(x)
-#         return x
 # %%
 def dice_loss(logits, true, eps=1e-7):
     """Computes the Sørensen–Dice loss.
@@ -341,23 +362,48 @@ def hard_dice(pred, mask, label, eps=1e-7):
     
     return np.array(score)
 
-
-# optimizer = torch.optim.Adam(params=model.parameters(),
-#                                  lr=1e-4,
-#                                  weight_decay=1e-3)
-# scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer,
-#                                                        gamma=0.95)
-
 # %%
 def evaluate_epoch(validloader, model):
     model.eval()
     scores = []
-
+    
     for (inputs, targets, label, _) in tqdm(validloader):
-        outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
-        if CFG.seg_model_name == 'segformer' and not CFG.ensemble:        
-            outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
+        if CFG.TTA and not CFG.ensemble:
+            tta_pred = None
+            inputs = inputs.squeeze()
+            inputs = inputs.detach().cpu().numpy()
+            
+            for j, tta_aug in enumerate(tta_augs):
+                # Augmentation    
+                aug_img = tta_aug(image = inputs)['image']
+                aug_img = torch.tensor(aug_img)
+                aug_img = aug_img.unsqueeze(0)
+
+                with torch.no_grad():
+                    outputs = model.forward(aug_img.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
+                    if CFG.seg_model_name == 'segformer' and not CFG.ensemble:        
+                        outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
+                    # Deaugmentation
+                    outputs = outputs.permute(2,3,1,0).squeeze()
+                    outputs = outputs.detach().cpu().numpy()
+                    if tta_deaugs[j] is not None:
+                        outputs = tta_deaugs[j](image = inputs, 
+                                              mask = outputs)['mask']          
+
+                    if tta_pred is None:
+                        tta_pred = outputs
+                    else:       
+                        tta_pred += outputs
+            outputs = tta_pred / len(tta_augs)
+            outputs = torch.tensor(outputs).unsqueeze(0).permute(0,-1,1,2)
+
+        else:
+            outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
+            if CFG.seg_model_name == 'segformer' and not CFG.ensemble:        
+                outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
         targets = targets.long()
+
+        
         #calculate dice
         score = hard_dice(outputs, targets, label)
         
@@ -436,11 +482,39 @@ def predict(model, loader):
     
     test_results = []
     for (inputs, _, label, image_id) in tqdm(loader):
-        
-        # forward pass       
-        pred = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
-        if CFG.seg_model_name == 'segformer' and not CFG.ensemble:
-            pred = F.interpolate(pred, (320, 320), mode = 'bilinear')
+        if CFG.TTA:
+            tta_pred = None
+            inputs = inputs.squeeze()
+            inputs = inputs.detach().cpu().numpy()
+            
+            for j, tta_aug in enumerate(tta_augs):
+                # Augmentation    
+                aug_img = tta_aug(image = inputs)['image']
+                aug_img = torch.tensor(aug_img)
+                aug_img = aug_img.unsqueeze(0)
+
+                with torch.no_grad():
+                    outputs = model.forward(aug_img.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
+                    if CFG.seg_model_name == 'segformer' and not CFG.ensemble:        
+                        outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
+                    # Deaugmentation
+                    outputs = outputs.permute(2,3,1,0).squeeze()
+                    outputs = outputs.detach().cpu().numpy()
+                    if tta_deaugs[j] is not None:
+                        outputs = tta_deaugs[j](image = inputs, 
+                                              mask = outputs)['mask']          
+
+                    if tta_pred is None:
+                        tta_pred = outputs
+                    else:       
+                        tta_pred += outputs
+            pred = tta_pred / len(tta_augs)
+            pred = torch.tensor(pred).unsqueeze(0).permute(0,-1,1,2)
+        else:
+            # forward pass       
+            pred = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
+            if CFG.seg_model_name == 'segformer' and not CFG.ensemble:
+                pred = F.interpolate(pred, (320, 320), mode = 'bilinear')
         # move back to cpu
         pred     = pred.detach().cpu()
         image_id = str(image_id[0].item())

@@ -240,9 +240,6 @@ def build_model(CFG, model_name):
     
     return model
 
-if not CFG.ensemble:
-    model = build_model(CFG, CFG.seg_model_name)
-
 # %%
 class EnsembleModel(nn.Module):
     def __init__(self, model_names, model_paths):
@@ -391,15 +388,21 @@ if CFG.specific_weight_file:
 weight_paths.sort(key=lambda x: x[0])
 weight_paths = [os.path.join(CFG.load_weight_folder, p) for p in weight_paths]
 
-if CFG.ensemble:
+if not CFG.ensemble:
+    model = build_model(CFG, CFG.seg_model_name)
+    for path in weight_paths:
+        model.load_state_dict(torch.load(path))
+        print(f"Inference model: {path}")
+        model.eval()
+        with torch.no_grad():
+            valid_dice = evaluate_epoch(valid_loader, model)
+            print(f"Valid Dice: {valid_dice}, LB Score: {valid_dice-0.1}")
+else:
     model_paths = ['./results/segformer_weights_06_28_2023-15:43:34/3_0.386_weights_segformer_2_images_False_meta.pth',\
                 './results/segformer_weights_06_28_2023-15:43:34/0_0.378_weights_segformer_2_images_False_meta.pth']
     model = EnsembleModel([CFG.seg_model_name, CFG.seg_model_name], model_paths)
 
-for path in weight_paths:
-    if not CFG.ensemble:
-        model.load_state_dict(torch.load(path))
-        print(f"Inference model: {path}")
+    print(f"Inference ensemble models: ", model_paths)
     model.eval()
     with torch.no_grad():
         valid_dice = evaluate_epoch(valid_loader, model)
@@ -477,7 +480,8 @@ def show_image(image,
     return None
 
 if CFG.visualize:
-    model.load_state_dict(torch.load(f"{CFG.load_weight_folder}/{CFG.specific_weight_file}"))
+    if not CFG.ensemble:
+        model.load_state_dict(torch.load(f"{CFG.load_weight_folder}/{CFG.specific_weight_file}"))
     model.eval()
 
 # %%

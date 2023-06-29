@@ -60,7 +60,12 @@ class CFG:
     seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
-    ensemble       = True
+    ensemble       = False
+    ensemble_model_names = ['segformer', 'UNetPlusPlus']
+    ensemble_model_paths = ['./results/segformer_weights_06_28_2023-15:43:34/3_0.386_weights_segformer_2_images_False_meta.pth',\
+                # './results/segformer_weights_06_28_2023-15:43:34/0_0.378_weights_segformer_2_images_False_meta.pth']
+                'results/UNetPlusPlus_weights_06_28_2023-11:46:36/-1_0.358_weights_UNetPlusPlus_2_images_False_meta.pth']
+
     use_vi_inf     = True
     img_size       = 320
 
@@ -73,8 +78,8 @@ class CFG:
     use_meta       = False
 
     load_weight_folder = 'results/segformer_weights_06_28_2023-21:14:14/'
-    specific_weight_file = '0_0.336_weights_segformer_2_images_False_meta.pth'
-    device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
+    specific_weight_file = '3_0.360_weights_segformer_2_images_False_meta.pth'
+    device         = torch.device('cuda:4' if torch.cuda.is_available() else 'cpu')
     submission     = False
     visualize      = False
 
@@ -245,6 +250,8 @@ class EnsembleModel(nn.Module):
     def __init__(self, model_names, model_paths):
         super().__init__()
         self.models = nn.ModuleList()
+        self.model_names = model_names
+        self.model_paths = model_paths
         for model_name, model_path in zip(model_names, model_paths):
             model = build_model(CFG, model_name)
             model.to(CFG.device)
@@ -256,8 +263,11 @@ class EnsembleModel(nn.Module):
     
     def forward(self, x):
         output=[]
-        for m in self.models:
-            output.append(m(x))
+        for m, model_name in zip(self.models, self.model_names):
+            output_ = m(x)
+            if model_name == 'segformer':
+                output_ = F.interpolate(output_, (320, 320), mode = 'bilinear')
+            output.append(output_)
         output=torch.stack(output,dim=0).mean(0)
 
         return output
@@ -345,7 +355,7 @@ def evaluate_epoch(validloader, model):
 
     for (inputs, targets, label, _) in tqdm(validloader):
         outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
-        if CFG.seg_model_name == 'segformer':        
+        if CFG.seg_model_name == 'segformer' and not CFG.ensemble:        
             outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
         targets = targets.long()
         #calculate dice
@@ -398,11 +408,9 @@ if not CFG.ensemble:
             valid_dice = evaluate_epoch(valid_loader, model)
             print(f"Valid Dice: {valid_dice}, LB Score: {valid_dice-0.1}")
 else:
-    model_paths = ['./results/segformer_weights_06_28_2023-15:43:34/3_0.386_weights_segformer_2_images_False_meta.pth',\
-                './results/segformer_weights_06_28_2023-15:43:34/0_0.378_weights_segformer_2_images_False_meta.pth']
-    model = EnsembleModel([CFG.seg_model_name, CFG.seg_model_name], model_paths)
+    model = EnsembleModel(CFG.ensemble_model_names, CFG.ensemble_model_paths)
 
-    print(f"Inference ensemble models: ", model_paths)
+    print(f"Inference ensemble models: ", CFG.ensemble_model_paths)
     model.eval()
     with torch.no_grad():
         valid_dice = evaluate_epoch(valid_loader, model)
@@ -430,7 +438,7 @@ def predict(model, loader):
         
         # forward pass       
         pred = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
-        if CFG.seg_model_name == 'segformer':
+        if CFG.seg_model_name == 'segformer' and not CFG.ensemble:
             pred = F.interpolate(pred, (320, 320), mode = 'bilinear')
         # move back to cpu
         pred     = pred.detach().cpu()

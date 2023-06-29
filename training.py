@@ -72,10 +72,10 @@ class CFG:
     visible_folder  = "./dataset/processed/visibles/"
     infrared_folder = "./dataset/processed/infrareds/"
     mask_folder     = "./dataset/processed/masks/"
-    label_file      = "./dataset/processed/label_remove_small_pixels.csv"
+    label_file      = "./dataset/processed/label.csv"
 
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    seg_model_name = 'UNetPlusPlus' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
     ensemble       = False
@@ -94,7 +94,7 @@ class CFG:
     seed           = 42
     n_fold         = 4
     train_kfold    = True
-    train_fold     = [0, 3]
+    train_fold     = [0, 1, 2, 3]
 
     num_class      = 4 # 4
     num_inputs     = 2 if use_vi_inf else 1
@@ -103,7 +103,7 @@ class CFG:
     save_folder    = f'results/{seg_model_name}_weights_{str(datetime.now().strftime("%m_%d_%Y-%H:%M:%S"))}/'
     save_weight_path     =  f'weights_{seg_model_name}_{num_inputs}_images_{use_meta}_meta.pth'
 
-    device         = torch.device('cuda:6' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -117,7 +117,7 @@ preprocessing_fn = None
 def Augment(mode):
     if mode == "train":
         train_aug_list = [ 
-                          A.RandomScale(scale_limit=(1.2, 1.5), p=0.5), 
+                        #   A.RandomScale(scale_limit=(1.2, 1.5), p=0.5), 
                           A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
                         #   A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
@@ -406,12 +406,6 @@ optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # # learning rate scheduler
 scheduler = get_scheduler(CFG, optimizer)
 
-# optimizer = torch.optim.Adam(params=model.parameters(),
-#                                  lr=1e-4,
-#                                  weight_decay=1e-3)
-# scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer,
-#                                                        gamma=0.95)
-
 # %% cut mix rand bbox
 def rand_bbox(size, lam, to_tensor=True):
     W = size[-2]
@@ -593,46 +587,6 @@ if CFG.train_kfold:
                 n_epoch = 12)
         
         print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')
-
-
-# %%
-#----------------SUBMISSION-------------------#
-# lets define mask to RLE conversion
-def rle_encode(mask_image):
-    pixels = mask_image.flatten()
-    pixels[0] = 0
-    pixels[-1] = 0
-    runs = np.where(pixels[1:] != pixels[:-1])[0] + 2
-    runs[1::2] = runs[1::2] - runs[:-1:2]
-    
-    # to string format
-    runs = ' '.join(str(x) for x in runs)
-    
-    return runs
-
-def predict(model, loader):
-    
-    test_results = []
-    for (inputs, _, label, image_id) in loader:
-        
-        # forward pass       
-        pred = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
-        if CFG.seg_model_name == 'segformer':
-            pred = F.interpolate(pred, (320, 320), mode = 'bilinear')
-        # move back to cpu
-        pred     = pred.detach().cpu()
-        image_id = str(image_id[0].item())
-        
-        #pick the channel that coressponds to the true label
-        pred = (torch.argmax(pred, dim = 1) == label).squeeze(0).long().numpy()
-                
-        #convert to rle
-        pred_rle = rle_encode(pred)
-        
-        test_results.append({"image_id" : image_id,
-                             "pred_rle" : pred_rle})
-        
-    return test_results
 
 # %%
 # import tensor_comprehensions as tc

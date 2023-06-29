@@ -23,6 +23,7 @@ from segmentation_models_pytorch.encoders import get_preprocessing_fn
 import albumentations as A
 import timm
 
+from tqdm import tqdm
 from PIL import Image
 
 from matplotlib import pyplot as plt
@@ -391,15 +392,11 @@ def hard_dice(pred, mask, label, eps=1e-7):
 
 alpha = 0.3 #0.3 #FP
 beta = 1 - alpha # FN
-TverskyLoss = smp.losses.TverskyLoss(mode='multiclass', log_loss=False, alpha=alpha, beta=beta)
+gamma = 1.0
+TverskyLoss = smp.losses.TverskyLoss(mode='multiclass', log_loss=False, alpha=alpha,\
+                                      beta=beta, gamma=gamma)
 DiceLoss    = smp.losses.DiceLoss(mode='multiclass')
-CELoss      = smp.losses.SoftCrossEntropyLoss()
 LovaszLoss  = smp.losses.LovaszLoss(mode='multiclass', per_image=False)
-#%%
-def focal_tversky(y_pred, y_true):
-  pt_1 = TverskyLoss(y_pred, y_true)
-  gamma = 0.3
-  return torch.pow((1-pt_1), gamma)
 
 # %%
 loss_fn = TverskyLoss
@@ -466,7 +463,7 @@ def train_epoch(trainloader, model):
         
     losses = []
     
-    for (inputs, targets, *_) in trainloader:
+    for (inputs, targets, *_) in tqdm(trainloader):
         # forward pass
         if CFG.cutmix and random.random() > 0.4:
             lam = np.random.beta(beta, beta)
@@ -505,7 +502,7 @@ def evaluate_epoch(validloader, model):
     model.eval()
     scores = []
     loss = []
-    for (inputs, targets, label, _) in validloader:
+    for (inputs, targets, label, _) in tqdm(validloader):
         outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
         if CFG.seg_model_name == 'segformer':        
             outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')

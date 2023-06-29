@@ -30,6 +30,7 @@ from matplotlib.patches import Rectangle
 
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, ReduceLROnPlateau
 
+from tqdm import tqdm
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -59,7 +60,7 @@ class CFG:
     seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
-    ensemble       = False
+    ensemble       = True
     use_vi_inf     = True
     img_size       = 320
 
@@ -71,10 +72,11 @@ class CFG:
     num_inputs     = 2 if use_vi_inf else 1
     use_meta       = False
 
-    load_weight_folder = 'results/segformer_weights_06_28_2023-15:43:34/'
-    specific_weight_file = '3_0.386_weights_segformer_2_images_False_meta.pth'
+    load_weight_folder = 'results/segformer_weights_06_28_2023-21:14:14/'
+    specific_weight_file = '0_0.336_weights_segformer_2_images_False_meta.pth'
     device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
-    submission     = True
+    submission     = False
+    visualize      = False
 
 set_seed(CFG.seed)
 
@@ -238,10 +240,48 @@ def build_model(CFG, model_name):
     
     return model
 
-model = build_model(CFG, CFG.seg_model_name)
-print(count_parameters(model))
+if not CFG.ensemble:
+    model = build_model(CFG, CFG.seg_model_name)
 
+# %%
+class EnsembleModel(nn.Module):
+    def __init__(self, model_names, model_paths):
+        super().__init__()
+        self.models = nn.ModuleList()
+        for model_name, model_path in zip(model_names, model_paths):
+            model = build_model(CFG, model_name)
+            model.to(CFG.device)
 
+            model.load_state_dict(torch.load(model_path))
+            model.eval()
+
+            self.models.append(model)
+    
+    def forward(self, x):
+        output=[]
+        for m in self.models:
+            output.append(m(x))
+        output=torch.stack(output,dim=0).mean(0)
+
+        return output
+
+# import tensor_comprehensions as tc
+# def TTA(x:tc.Tensor,model:nn.Module):
+#     #x.shape=(batch,c,h,w)
+#     if CFG.TTA:
+#         shape=x.shape
+#         x=[x,*[tc.rot90(x,k=i,dims=(-2,-1)) for i in range(1,4)]]
+#         x=tc.cat(x,dim=0)
+#         x=model(x)
+#         x=torch.sigmoid(x)
+#         x=x.reshape(4,shape[0],*shape[2:])
+#         x=[tc.rot90(x[i],k=-i,dims=(-2,-1)) for i in range(4)]
+#         x=tc.stack(x,dim=0)
+#         return x.mean(0)
+#     else :
+#         x=model(x)
+#         x=torch.sigmoid(x)
+#         return x
 # %%
 def dice_loss(logits, true, eps=1e-7):
     """Computes the Sørensen–Dice loss.
@@ -306,7 +346,7 @@ def evaluate_epoch(validloader, model):
     model.eval()
     scores = []
 
-    for (inputs, targets, label, _) in validloader:
+    for (inputs, targets, label, _) in tqdm(validloader):
         outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device)).detach().cpu() #channel first
         if CFG.seg_model_name == 'segformer':        
             outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
@@ -351,11 +391,17 @@ if CFG.specific_weight_file:
 weight_paths.sort(key=lambda x: x[0])
 weight_paths = [os.path.join(CFG.load_weight_folder, p) for p in weight_paths]
 
+if CFG.ensemble:
+    model_paths = ['./results/segformer_weights_06_28_2023-15:43:34/3_0.386_weights_segformer_2_images_False_meta.pth',\
+                './results/segformer_weights_06_28_2023-15:43:34/0_0.378_weights_segformer_2_images_False_meta.pth']
+    model = EnsembleModel([CFG.seg_model_name, CFG.seg_model_name], model_paths)
+
 for path in weight_paths:
-    model.load_state_dict(torch.load(path))
-    model.eval()
-    with torch.no_grad():    
+    if not CFG.ensemble:
+        model.load_state_dict(torch.load(path))
         print(f"Inference model: {path}")
+    model.eval()
+    with torch.no_grad():
         valid_dice = evaluate_epoch(valid_loader, model)
         print(f"Valid Dice: {valid_dice}, LB Score: {valid_dice-0.1}")
 # %%
@@ -377,7 +423,7 @@ def rle_encode(mask_image):
 def predict(model, loader):
     
     test_results = []
-    for (inputs, _, label, image_id) in loader:
+    for (inputs, _, label, image_id) in tqdm(loader):
         
         # forward pass       
         pred = model(inputs.permute(0,-1,1,2).to(CFG.device)) # channel first
@@ -397,45 +443,6 @@ def predict(model, loader):
                              "pred_rle" : pred_rle})
         
     return test_results
-
-class EnsembleModel(nn.Module):
-    def __init__(self, model_names, model_paths):
-        super().__init__()
-        self.models = nn.ModuleList()
-        for model_name, model_path in zip(model_names, model_paths):
-            model = build_model(CFG, model_name)
-            model.to(CFG.device)
-
-            model.load_state_dict(torch.load(path))
-            model.eval()
-
-            self.models.append(model)
-    
-    def forward(self, x):
-        output=[]
-        for m in self.models:
-            output.append(m(x))
-        output=torch.stack(output,dim=0).mean(0)
-
-        return output
-
-# import tensor_comprehensions as tc
-# def TTA(x:tc.Tensor,model:nn.Module):
-#     #x.shape=(batch,c,h,w)
-#     if CFG.TTA:
-#         shape=x.shape
-#         x=[x,*[tc.rot90(x,k=i,dims=(-2,-1)) for i in range(1,4)]]
-#         x=tc.cat(x,dim=0)
-#         x=model(x)
-#         x=torch.sigmoid(x)
-#         x=x.reshape(4,shape[0],*shape[2:])
-#         x=[tc.rot90(x[i],k=-i,dims=(-2,-1)) for i in range(4)]
-#         x=tc.stack(x,dim=0)
-#         return x.mean(0)
-#     else :
-#         x=model(x)
-#         x=torch.sigmoid(x)
-#         return x
 
 # %% visualization
 def show_image(image,
@@ -469,44 +476,48 @@ def show_image(image,
     
     return None
 
-model.load_state_dict(torch.load(f"{CFG.load_weight_folder}/{CFG.specific_weight_file}"))
-model.eval()
+if CFG.visualize:
+    model.load_state_dict(torch.load(f"{CFG.load_weight_folder}/{CFG.specific_weight_file}"))
+    model.eval()
 
 # %%
 import random
 random_ids = [random.randint(0, 357) for _ in range(10)]
-for i in random_ids:
-    image, mask, label, case_id = valid_dataset[i]
-    visible = image[..., :3]
-    
-    mask_predict = model(image.unsqueeze(0).permute(0,-1,1,2).to(CFG.device))
-    mask_predict = F.interpolate(mask_predict, (320, 320)).cpu()
-    print("Dice: ", hard_dice(mask_predict, mask, label))
+if CFG.visualize:
+    for i in random_ids:
+        image, mask, label, case_id = valid_dataset[i]
+        visible = image[..., :3]
+        
+        mask_predict = model(image.unsqueeze(0).permute(0,-1,1,2).to(CFG.device))
+        mask_predict = F.interpolate(mask_predict, (320, 320)).cpu()
+        print("Dice: ", hard_dice(mask_predict, mask, label))
 
-    predict_class = torch.argmax(mask_predict, dim = 1)
-    mask_predict = (torch.argmax(mask_predict, dim = 1) == label).squeeze(0).long().numpy()
-    mask_predict *= label
+        predict_class = torch.argmax(mask_predict, dim = 1)
+        mask_predict = (torch.argmax(mask_predict, dim = 1) == label).squeeze(0).long().numpy()
+        mask_predict *= label
 
-    if CFG.use_vi_inf:
-        print("GT: ", case_id, label, torch.mean(mask.float()))
-        show_image(visible, mask = mask)
-        plt.show()
-        print("Predict: ", np.mean(mask_predict))
-        show_image(visible, mask = mask_predict)
-        plt.show()
-    else:
-        show_image(visible, mask = mask[0])
-        plt.show()
-    
+        if CFG.use_vi_inf:
+            print("GT: ", case_id, label, torch.mean(mask.float()))
+            show_image(visible, mask = mask)
+            plt.show()
+            print("Predict: ", np.mean(mask_predict))
+            show_image(visible, mask = mask_predict)
+            plt.show()
+        else:
+            show_image(visible, mask = mask[0])
+            plt.show()
+        
 
 
 # %%
 # load model
 if CFG.submission:
-    model.load_state_dict(torch.load(f'{CFG.load_weight_folder}/{CFG.specific_weight_file}'))
+    if not CFG.ensemble:
+        model.load_state_dict(torch.load(f'{CFG.load_weight_folder}/{CFG.specific_weight_file}'))
 
     test_results = predict(model, test_loader)
 
     df_submission = pd.DataFrame.from_dict(test_results)
 
-    df_submission.to_csv(f"{CFG.load_weight_folder}/my_submission.csv", index = False)
+    df_submission.to_csv(f"my_submission.csv", index = False)
+# %%

@@ -93,7 +93,7 @@ class CFG:
     seed           = 42
     n_fold         = 4
     train_kfold    = True
-    train_fold     = [0]
+    train_fold     = [0, 3]
 
     num_class      = 4 # 4
     num_inputs     = 2 if use_vi_inf else 1
@@ -115,7 +115,8 @@ preprocessing_fn = None
 
 def Augment(mode):
     if mode == "train":
-        train_aug_list = [ #A.RandomScale(scale_limit=(0.0, 1.0), p=0.5), 
+        train_aug_list = [ 
+                          A.RandomScale(scale_limit=(1.2, 1.5), p=0.5), 
                           A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
                         #   A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
@@ -569,8 +570,8 @@ if CFG.train_kfold:
     # Split your dataset into K-folds
     kf = KFold(n_splits=CFG.n_fold, shuffle=True, random_state=CFG.seed)
     for fold, (train_idx, val_idx) in enumerate(kf.split(train_val_df)):
-        # if fold != CFG.train_fold:
-        #     continue
+        if fold not in CFG.train_fold:
+            continue
         
         train_df = train_val_df.iloc[train_idx].reset_index(drop=True)
         train_dataset = FOREST(train_df, mode='train')
@@ -592,7 +593,7 @@ if CFG.train_kfold:
                                     pin_memory=False)
         
         model = train(train_loader, valid_loader, model, fold=fold,
-                n_epoch = CFG.epochs)
+                n_epoch = 12)
         
         print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')
 

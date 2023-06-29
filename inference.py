@@ -71,8 +71,8 @@ class CFG:
     num_inputs     = 2 if use_vi_inf else 1
     use_meta       = False
 
-    load_weight_folder = 'results/segformer_weights_06_28_2023-14:34:27/'
-    specific_weight_file = '-1_0.366_weights_segformer_2_images_False_meta.pth'
+    load_weight_folder = 'results/segformer_weights_06_28_2023-15:43:34/'
+    specific_weight_file = '3_0.386_weights_segformer_2_images_False_meta.pth'
     device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
     submission     = True
 
@@ -344,7 +344,7 @@ test_loader = DataLoader(test_dataset,
                          num_workers = 14,
                          shuffle     = False,
                          pin_memory  = False)
-
+# %%
 weight_paths = os.listdir(CFG.load_weight_folder)
 if CFG.specific_weight_file:
     weight_paths = [CFG.specific_weight_file]
@@ -437,62 +437,68 @@ class EnsembleModel(nn.Module):
 #         x=torch.sigmoid(x)
 #         return x
 
-# %% predict
-# COLORMAP = [
-#     [0, 0, 0],
-#     [128, 0, 0],
-#     [0, 128, 0],
-#     [128, 128, 0],
-#     [0, 0, 128],
-#     [128, 0, 128],
-#     [0, 128, 128],
-#     [128, 128, 128],
-#     [64, 0, 0],
-#     [192, 0, 0],
-#     [64, 128, 0],
-# ]
-# class UnNormalize(object):
-#     def __init__(self, mean, std):
-#         self.mean = mean
-#         self.std = std
-        
-#     def __call__(self, tensor):
-#         """
-#         Args:
-#             tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
-#         Returns:
-#             Tensor: Normalized image.
-#         """
-#         for t, m, s in zip(tensor, self.mean, self.std):
-#             t.mul_(s).add_(m)
-#             # The normalize code -> t.sub_(m).div_(s)
-#         return tensor
+# %% visualization
+def show_image(image,
+               mask   = None,
+               labels = ["no deforestation",
+                         "plantation",
+                         "grassland shrubland",
+                         "smallholder agriculture",
+                         "other"],
+               colors = np.array([(0.,0.,0.),
+                                  (0.667,0.,0.), 
+                                  (0.,0.667,0.677), 
+                                  (0.,0.,0.667),
+                                  (0.667, 0.667, 0.667)])):
     
-# unorm = UnNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    # copy to prevent from modifying the input image and mask
+    image = np.copy(image)
+    mask  = np.copy(mask) if mask is not None else mask
+    
+    # normalize to [0-1]
+    image = (image - image.min())/(image.max() - image.min())    
+    # add good-looking color
+    mask  = colors[mask] if mask is not None else mask
+    
+    plt.imshow(image, cmap='bone')    
+    if mask is not None:
+        plt.imshow(mask, alpha=0.6)
+        handles = [Rectangle((0,0),1,1, color=color) for color in colors]
+        plt.legend(handles, labels)
+    plt.axis('off')
+    
+    return None
 
-# import random
-# id = random.randint(0, 100)
-# with torch.no_grad():
-#     model.eval()
-#     x, y, label, image_id = valid_dataset.__getitem__(id)
+model.load_state_dict(torch.load(f"{CFG.load_weight_folder}/{CFG.specific_weight_file}"))
+model.eval()
+
+# %%
+import random
+random_ids = [random.randint(0, 357) for _ in range(10)]
+for i in random_ids:
+    image, mask, label, case_id = valid_dataset[i]
+    visible = image[..., :3]
     
-#     y_predict = model(x.unsqueeze(0).permute(0,-1,1,2).to(CFG.device))
-#     y_predict = F.interpolate(y_predict, (320, 320))
-#     y_predict = y_predict.argmax(dim=1).squeeze().cpu().numpy()
-#     color_mask_predict = np.zeros((*y_predict.shape, 3))
+    mask_predict = model(image.unsqueeze(0).permute(0,-1,1,2).to(CFG.device))
+    mask_predict = F.interpolate(mask_predict, (320, 320)).cpu()
+    print("Dice: ", hard_dice(mask_predict, mask, label))
+
+    predict_class = torch.argmax(mask_predict, dim = 1)
+    mask_predict = (torch.argmax(mask_predict, dim = 1) == label).squeeze(0).long().numpy()
+    mask_predict *= label
+
+    if CFG.use_vi_inf:
+        print("GT: ", case_id, label, torch.mean(mask.float()))
+        show_image(visible, mask = mask)
+        plt.show()
+        print("Predict: ", np.mean(mask_predict))
+        show_image(visible, mask = mask_predict)
+        plt.show()
+    else:
+        show_image(visible, mask = mask[0])
+        plt.show()
     
-#     for i, color in enumerate(COLORMAP):
-#         color_mask_predict[y_predict==i] = np.array(color)
-#     color_mask = np.zeros((*y_predict.shape, 3))
-#     for i, color in enumerate(COLORMAP):
-#         color_mask[label==i] = np.array(color)
-#     plt.subplot(1,3,1)
-#     plt.imshow(y)
-#     plt.subplot(1,3,2)
-#     plt.imshow(color_mask)
-#     plt.subplot(1,3,3)
-#     plt.imshow(color_mask_predict)
-#     plt.show()
+
 
 # %%
 # load model

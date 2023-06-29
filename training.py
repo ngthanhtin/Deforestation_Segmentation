@@ -75,16 +75,16 @@ class CFG:
     label_file      = "./dataset/processed/label.csv"
 
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'UNetPlusPlus' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
     ensemble       = False
     cutmix         = False
     use_vi_inf     = True
     img_size       = 320
-    scheduler      = "CosineAnnealingWarmRestarts" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
+    scheduler      = None #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
     epochs         = 10
-    init_lr        = 0.0005
+    init_lr        = 0.0001
     min_lr         = 1e-6
     T_0            = 9
     T_mult         = 1
@@ -93,7 +93,7 @@ class CFG:
     
     seed           = 42
     n_fold         = 4
-    train_kfold    = True
+    train_kfold    = False
     train_fold     = [0, 1, 2, 3]
 
     num_class      = 4 # 4
@@ -119,7 +119,7 @@ def Augment(mode):
         train_aug_list = [ 
                         #   A.RandomScale(scale_limit=(1.2, 1.5), p=0.5), 
                           A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
-                        #   A.RandomRotate90(p=0.2),
+                          A.RandomRotate90(p=0.2),
                           A.HorizontalFlip(p=0.5),
                           A.VerticalFlip(p=0.5),
                         
@@ -129,7 +129,7 @@ def Augment(mode):
                             A.GaussNoise(var_limit=(0,50.0), mean=0, p=0.5),
                             A.GaussianBlur(blur_limit=(3,7), p=0.5),
                             ], p=0.2),
-                          A.RandomBrightnessContrast(brightness_limit=0.35, contrast_limit=0.5, 
+                          A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.3, 
                                  brightness_by_max=True,p=0.5),
                           A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=30, 
                            val_shift_limit=0, p=0.5),
@@ -249,7 +249,7 @@ len(train_df), len(val_df)
 # %%%
 train_dataset = FOREST(train_df, mode = "train")
 
-for i in range(0,15):
+for i in range(20,35):
     image, mask, _, case_id = train_dataset[i]
     visible = image[..., :3]
     
@@ -400,7 +400,7 @@ LovaszLoss  = smp.losses.LovaszLoss(mode='multiclass', per_image=False)
 
 # %%
 loss_fn = TverskyLoss
-CFG.init_lr = 0.0005
+CFG.init_lr = 0.0001
 # optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
 optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # # learning rate scheduler
@@ -439,7 +439,7 @@ def train(trainloader, validloader, model, fold=0,
         print("")
         model.train()
         train_loss = train_epoch(trainloader, model)        
-        print(f"Epoch {epoch}/{n_epoch}, Train Loss: {train_loss}")
+        print(f"Epoch {epoch}/{n_epoch}, Train Loss: {train_loss}") #, LR: {scheduler.get_lr()}")
         
         with torch.no_grad():    
             valid_loss, valid_dice = evaluate_epoch(validloader, model)     
@@ -552,7 +552,7 @@ valid_loader = DataLoader(valid_dataset,
 
 
 if not CFG.train_kfold:
-    model = train(train_loader, valid_loader, model, fold=-1, n_epoch = 12)
+    model = train(train_loader, valid_loader, model, fold=-1, n_epoch = 20)
 
 
 #%%

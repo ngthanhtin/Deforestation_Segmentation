@@ -57,14 +57,13 @@ class CFG:
     label_file      = "./dataset/processed/label_remove_small_pixels.csv"
 
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    seg_model_name = 'UNetPlusPlus' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
-    ensemble       = False
+    ensemble       = True
     ensemble_model_names = ['segformer', 'UNetPlusPlus']
-    ensemble_model_paths = ['./results/segformer_weights_06_28_2023-15:43:34/3_0.386_weights_segformer_2_images_False_meta.pth',\
-                # './results/segformer_weights_06_28_2023-15:43:34/0_0.378_weights_segformer_2_images_False_meta.pth']
-                'results/UNetPlusPlus_weights_06_28_2023-11:46:36/-1_0.358_weights_UNetPlusPlus_2_images_False_meta.pth']
+    ensemble_model_paths = ['./results/segformer_weights_06_29_2023-10:49:17/-1_0.342_weights_segformer_2_images_False_meta.pth',\
+                'results/UNetPlusPlus_weights_06_29_2023-10:31:25/-1_0.330_weights_UNetPlusPlus_2_images_False_meta.pth']
 
     use_vi_inf     = True
     img_size       = 320
@@ -77,11 +76,12 @@ class CFG:
     num_inputs     = 2 if use_vi_inf else 1
     use_meta       = False
 
-    load_weight_folder = 'results/segformer_weights_06_28_2023-21:14:14/'
-    specific_weight_file = '3_0.360_weights_segformer_2_images_False_meta.pth'
-    device         = torch.device('cuda:4' if torch.cuda.is_available() else 'cpu')
-    submission     = False
+    load_weight_folder = 'results/UNetPlusPlus_weights_06_29_2023-10:31:25/'
+    specific_weight_file = '-1_0.336_weights_UNetPlusPlus_2_images_False_meta.pth'
+    device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
+    submission     = True
     visualize      = False
+    eval           = True
 
 set_seed(CFG.seed)
 
@@ -400,21 +400,22 @@ weight_paths = [os.path.join(CFG.load_weight_folder, p) for p in weight_paths]
 
 if not CFG.ensemble:
     model = build_model(CFG, CFG.seg_model_name)
-    for path in weight_paths:
-        model.load_state_dict(torch.load(path))
-        print(f"Inference model: {path}")
+    if CFG.eval:
+        for path in weight_paths:
+            model.load_state_dict(torch.load(path))
+            print(f"Inference model: {path}")
+            model.eval()
+            with torch.no_grad():
+                valid_dice = evaluate_epoch(valid_loader, model)
+                print(f"Valid Dice: {valid_dice}, LB Score: {valid_dice-0.1}")
+else:
+    model = EnsembleModel(CFG.ensemble_model_names, CFG.ensemble_model_paths)
+    if CFG.eval:
+        print(f"Inference ensemble models: ", CFG.ensemble_model_paths)
         model.eval()
         with torch.no_grad():
             valid_dice = evaluate_epoch(valid_loader, model)
             print(f"Valid Dice: {valid_dice}, LB Score: {valid_dice-0.1}")
-else:
-    model = EnsembleModel(CFG.ensemble_model_names, CFG.ensemble_model_paths)
-
-    print(f"Inference ensemble models: ", CFG.ensemble_model_paths)
-    model.eval()
-    with torch.no_grad():
-        valid_dice = evaluate_epoch(valid_loader, model)
-        print(f"Valid Dice: {valid_dice}, LB Score: {valid_dice-0.1}")
 # %%
 #----------------SUBMISSION-------------------#
 

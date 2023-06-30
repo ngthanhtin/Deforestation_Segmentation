@@ -212,6 +212,112 @@ class densenet121(DenseNet):
         super().__init__(32, (6, 12, 24, 16), 64)
 
 
+class FiLMgenerator(Module):
+    """The FiLM generator processes the conditioning information
+    and produces parameters that describe how the target network should alter its computation.
+
+    Here, the FiLM generator is a multi-layer perceptron.
+
+    Args:
+        n_features (int): Number of input channels.
+        n_channels (int): Number of output channels.
+        n_hid (int): Number of hidden units in layer.
+
+    Attributes:
+        linear1 (Linear): Input linear layer.
+        sig (Sigmoid): Sigmoid function.
+        linear2 (Linear): Hidden linear layer.
+        linear3 (Linear): Output linear layer.
+    """
+
+    def __init__(self, n_features, n_channels, n_hid=64):
+        super(FiLMgenerator, self).__init__()
+        self.linear1 = nn.Linear(n_features, n_hid)
+        self.sig = nn.Sigmoid()
+        self.linear2 = nn.Linear(n_hid, n_hid // 4)
+        self.linear3 = nn.Linear(n_hid // 4, n_channels * 2)
+
+    def forward(self, x, shared_weights=None):
+        if shared_weights is not None:  # weight sharing
+            self.linear1.weight = shared_weights[0]
+            self.linear2.weight = shared_weights[1]
+
+        x = self.linear1(x)
+        x = self.sig(x)
+        x = self.linear2(x)
+        x = self.sig(x)
+        x = self.linear3(x)
+
+        out = self.sig(x)
+        return out, [self.linear1.weight, self.linear2.weight]
+
+class FiLMlayer(Module):
+    """Applies Feature-wise Linear Modulation to the incoming data
+    .. seealso::
+        Perez, Ethan, et al. "Film: Visual reasoning with a general conditioning layer."
+        Thirty-Second AAAI Conference on Artificial Intelligence. 2018.
+
+    Args:
+        n_metadata (dict): FiLM metadata see ivadomed.loader.film for more details.
+        n_channels (int): Number of output channels.
+
+    Attributes:
+        batch_size (int): Batch size.
+        height (int): Image height.
+        width (int): Image width.
+        feature_size (int): Number of features in data.
+        generator (FiLMgenerator): FiLM network.
+        gammas (float): Multiplicative term of the FiLM linear modulation.
+        betas (float): Additive term of the FiLM linear modulation.
+    """
+
+    def __init__(self, n_metadata, n_channels):
+        super(FiLMlayer, self).__init__()
+
+        self.batch_size = None
+        self.height = None
+        self.width = None
+        self.depth = None
+        self.feature_size = None
+        self.generator = FiLMgenerator(n_metadata, n_channels)
+        # Add the parameters gammas and betas to access them out of the class.
+        self.gammas = None
+        self.betas = None
+
+    def forward(self, feature_maps, context, w_shared):
+        data_shape = feature_maps.data.shape
+        if len(data_shape) == 4:
+            _, self.feature_size, self.height, self.width = data_shape
+        elif len(data_shape) == 5:
+            _, self.feature_size, self.height, self.width, self.depth = data_shape
+        else:
+            raise ValueError("Data should be either 2D (tensor length: 4) or 3D (tensor length: 5), found shape: {}".format(data_shape))
+
+        # if torch.cuda.is_available():
+        #     context = torch.Tensor(context).cuda()
+        # else:
+        context = torch.Tensor(context)
+
+        # Estimate the FiLM parameters using a FiLM generator from the contioning metadata
+        film_params, new_w_shared = self.generator(context, w_shared)
+
+        # FiLM applies a different affine transformation to each channel,
+        # consistent accross spatial locations
+        if len(data_shape) == 4:
+            film_params = film_params.unsqueeze(-1).unsqueeze(-1)
+            film_params = film_params.repeat(1, 1, self.height, self.width)
+        else:
+            film_params = film_params.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            film_params = film_params.repeat(1, 1, self.height, self.width, self.depth)
+
+        self.gammas = film_params[:, :self.feature_size, ]
+        self.betas = film_params[:, self.feature_size:, ]
+
+        # Apply the linear modulation
+        output = self.gammas * feature_maps + self.betas
+
+        return output, new_w_shared
+    
 class DownConv(Module):
     """Two successive series of down convolution, batch normalization and dropout in 2D.
     Used in U-Net's encoder.
@@ -458,13 +564,15 @@ class Decoder(Module):
                 # Avoid division by zero
                 class_sum[class_sum == 0] = 1
                 preds /= class_sum
-        else:
+        elif hasattr(self, "final_activation") and self.final_activation == "sigmoid":
             preds = torch.sigmoid(x)
+        else:
+            preds = x
 
         # If model multiclass
-        if self.out_channel > 1:
-            # Remove background class
-            preds = preds[:, 1:, ]
+        # if self.out_channel > 1:
+        #     # Remove background class
+        #     preds = preds[:, 1:, ]
 
         return preds
 
@@ -558,109 +666,21 @@ class FiLMedUnet(Unet):
         return preds
 
 
-class FiLMgenerator(Module):
-    """The FiLM generator processes the conditioning information
-    and produces parameters that describe how the target network should alter its computation.
+def test_unet():
+    x = torch.randn((3, 6, 320, 320))
+    model = Unet(in_channel=6, out_channel=5)
+    preds = model(x)
+    print(preds.shape)
 
-    Here, the FiLM generator is a multi-layer perceptron.
+def test_filmunet():
+    
+    MANUFACTURER_CATEGORY = {'Siemens': 0, 'Philips': 1, 'GE': 2}
+    CONTRAST_CATEGORY = {"T1w": 0, "T2w": 1, "T2star": 2,
+                    "acq-MToff_MTS": 3, "acq-MTon_MTS": 4, "acq-T1w_MTS": 5}
+    x = torch.randn((3, 6, 320, 320))
+    context = torch.randn((3, 7))
+    model = FiLMedUnet(in_channel=6, out_channel=5, film_layers=[1,0,1,0,0,1,1,1], n_metadata=7)
+    preds = model(x,context)
+    print(preds.shape)
 
-    Args:
-        n_features (int): Number of input channels.
-        n_channels (int): Number of output channels.
-        n_hid (int): Number of hidden units in layer.
-
-    Attributes:
-        linear1 (Linear): Input linear layer.
-        sig (Sigmoid): Sigmoid function.
-        linear2 (Linear): Hidden linear layer.
-        linear3 (Linear): Output linear layer.
-    """
-
-    def __init__(self, n_features, n_channels, n_hid=64):
-        super(FiLMgenerator, self).__init__()
-        self.linear1 = nn.Linear(n_features, n_hid)
-        self.sig = nn.Sigmoid()
-        self.linear2 = nn.Linear(n_hid, n_hid // 4)
-        self.linear3 = nn.Linear(n_hid // 4, n_channels * 2)
-
-    def forward(self, x, shared_weights=None):
-        if shared_weights is not None:  # weight sharing
-            self.linear1.weight = shared_weights[0]
-            self.linear2.weight = shared_weights[1]
-
-        x = self.linear1(x)
-        x = self.sig(x)
-        x = self.linear2(x)
-        x = self.sig(x)
-        x = self.linear3(x)
-
-        out = self.sig(x)
-        return out, [self.linear1.weight, self.linear2.weight]
-
-
-class FiLMlayer(Module):
-    """Applies Feature-wise Linear Modulation to the incoming data
-    .. seealso::
-        Perez, Ethan, et al. "Film: Visual reasoning with a general conditioning layer."
-        Thirty-Second AAAI Conference on Artificial Intelligence. 2018.
-
-    Args:
-        n_metadata (dict): FiLM metadata see ivadomed.loader.film for more details.
-        n_channels (int): Number of output channels.
-
-    Attributes:
-        batch_size (int): Batch size.
-        height (int): Image height.
-        width (int): Image width.
-        feature_size (int): Number of features in data.
-        generator (FiLMgenerator): FiLM network.
-        gammas (float): Multiplicative term of the FiLM linear modulation.
-        betas (float): Additive term of the FiLM linear modulation.
-    """
-
-    def __init__(self, n_metadata, n_channels):
-        super(FiLMlayer, self).__init__()
-
-        self.batch_size = None
-        self.height = None
-        self.width = None
-        self.depth = None
-        self.feature_size = None
-        self.generator = FiLMgenerator(n_metadata, n_channels)
-        # Add the parameters gammas and betas to access them out of the class.
-        self.gammas = None
-        self.betas = None
-
-    def forward(self, feature_maps, context, w_shared):
-        data_shape = feature_maps.data.shape
-        if len(data_shape) == 4:
-            _, self.feature_size, self.height, self.width = data_shape
-        elif len(data_shape) == 5:
-            _, self.feature_size, self.height, self.width, self.depth = data_shape
-        else:
-            raise ValueError("Data should be either 2D (tensor length: 4) or 3D (tensor length: 5), found shape: {}".format(data_shape))
-
-        if torch.cuda.is_available():
-            context = torch.Tensor(context).cuda()
-        else:
-            context = torch.Tensor(context)
-
-        # Estimate the FiLM parameters using a FiLM generator from the contioning metadata
-        film_params, new_w_shared = self.generator(context, w_shared)
-
-        # FiLM applies a different affine transformation to each channel,
-        # consistent accross spatial locations
-        if len(data_shape) == 4:
-            film_params = film_params.unsqueeze(-1).unsqueeze(-1)
-            film_params = film_params.repeat(1, 1, self.height, self.width)
-        else:
-            film_params = film_params.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            film_params = film_params.repeat(1, 1, self.height, self.width, self.depth)
-
-        self.gammas = film_params[:, :self.feature_size, ]
-        self.betas = film_params[:, self.feature_size:, ]
-
-        # Apply the linear modulation
-        output = self.gammas * feature_maps + self.betas
-
-        return output, new_w_shared
+test_filmunet()

@@ -1,4 +1,4 @@
-from Indonesia_Deforestation_Segmentation.single_models.unet import UNET
+from single_models.unet import UNET
 from torch import nn
 import torch
 

@@ -673,14 +673,10 @@ def test_unet():
     print(preds.shape)
 
 def test_filmunet():
-    
-    MANUFACTURER_CATEGORY = {'Siemens': 0, 'Philips': 1, 'GE': 2}
-    CONTRAST_CATEGORY = {"T1w": 0, "T2w": 1, "T2star": 2,
-                    "acq-MToff_MTS": 3, "acq-MTon_MTS": 4, "acq-T1w_MTS": 5}
-    x = torch.randn((3, 6, 320, 320))
-    context = torch.randn((3, 7))
-    model = FiLMedUnet(in_channel=6, out_channel=5, film_layers=[1,0,1,0,0,1,1,1], n_metadata=7)
+
+    x = torch.randn((8, 6, 320, 320))
+    context = torch.randn((8, 3)).float()
+    print(type(context), context)
+    model = FiLMedUnet(in_channel=6, out_channel=5, film_layers=[1,0,1,0,0,1,1,1], n_metadata=3)
     preds = model(x,context)
     print(preds.shape)
-
-test_filmunet()

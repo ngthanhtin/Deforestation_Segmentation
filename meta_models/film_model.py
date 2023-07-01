@@ -358,12 +358,12 @@ class DownConv(Module):
         self.conv2_drop = dropout(dropout_rate)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = self.conv1_bn(x)
+        x = self.conv1(x)
+        x = F.relu(self.conv1_bn(x))
         x = self.conv1_drop(x)
 
-        x = F.relu(self.conv2(x))
-        x = self.conv2_bn(x)
+        x = self.conv2(x)
+        x = F.relu(self.conv2_bn(x))
         x = self.conv2_drop(x)
         return x
 
@@ -602,7 +602,7 @@ class Unet(Module):
     """
 
     def __init__(self, in_channel=1, out_channel=1, depth=3, dropout_rate=0.3, bn_momentum=0.1, final_activation='sigmoid',
-                 is_2d=True, n_filters=64, **kwargs):
+                 is_2d=True, n_filters=8, **kwargs):
         super(Unet, self).__init__()
 
         # Encoder path
@@ -641,7 +641,7 @@ class FiLMedUnet(Unet):
     """
 
     def __init__(self, in_channel=1, out_channel=1, depth=3, dropout_rate=0.3,
-                 bn_momentum=0.1, n_metadata=None, film_layers=None, is_2d=True, n_filters=64, **kwargs):
+                 bn_momentum=0.1, n_metadata=None, film_layers=None, is_2d=True, n_filters=8, **kwargs):
         super().__init__(in_channel=in_channel, out_channel=out_channel, depth=depth,
                          dropout_rate=dropout_rate, bn_momentum=bn_momentum)
 

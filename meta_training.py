@@ -75,7 +75,7 @@ class CFG:
     label_file      = "./dataset/processed/label.csv"
 
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'FiLMedUnet' # FiLMedUnet, UNet
+    seg_model_name = 'metaseg' # FiLMedUnet, UNet
     activation     = None #softmax2d, sigmoid, softmax
 
     cutmix         = False # failed
@@ -87,9 +87,12 @@ class CFG:
     min_lr         = 1e-6
     T_0            = 9
     T_mult         = 1
-    batch_size     = 8
+    batch_size     = 4
     weight_decay   = 1e-6
     
+    depth          = 4
+    film_layers    = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
     seed           = 42
     n_fold         = 4
     train_kfold    = False
@@ -97,7 +100,8 @@ class CFG:
 
     num_class      = 4 # 4
     num_inputs     = 2 if use_vi_inf else 1
-    use_meta       = False
+    use_meta       = True
+    n_meta_features= 3
 
     save_folder    = f'results/{seg_model_name}_weights_{str(datetime.now().strftime("%m_%d_%Y-%H:%M:%S"))}/'
     save_weight_path     =  f'weights_{seg_model_name}_{num_inputs}_images_{use_meta}_meta.pth'
@@ -246,7 +250,7 @@ label_df = pd.read_csv(CFG.label_file)
 label_df['data_folder'] = ['./dataset']*len(label_df)
 train_df = label_df[label_df['mode'] == 'train']
 val_df = label_df[label_df['mode'] == 'valid']
-len(train_df), len(val_df)
+print(len(train_df), len(val_df))
 # %%%
 train_dataset = FOREST(train_df, mode = "train")
 
@@ -270,11 +274,27 @@ num_channels = 3+3 if CFG.use_vi_inf else 3
 print(f"Number of channels: {num_channels}")
 
 from meta_models.film_model import FiLMedUnet, Unet
+from meta_models.latefusion_model import Meta_Seg
 if CFG.seg_model_name == "UNet":
-    model = Unet(in_channel=num_channels, out_channel=CFG.num_class+1).to(CFG.device)
+    model = Unet(in_channel=num_channels, out_channel=CFG.num_class+1, depth=CFG.depth).to(CFG.device)
 elif CFG.seg_model_name == 'FiLMedUnet':
-    model = FiLMedUnet(in_channel=num_channels, out_channel=CFG.num_class+1, film_layers=[1,0,1,0,0,1,1,1], n_metadata=3).to(CFG.device)
-
+    model = FiLMedUnet(in_channel=num_channels, out_channel=CFG.num_class+1, film_layers=CFG.film_layers, n_metadata=3, depth=CFG.depth).to(CFG.device)
+elif CFG.seg_model_name == 'metaseg':
+    seg_model = smp.UnetPlusPlus(
+            encoder_name=CFG.encoder_name,      
+            encoder_weights="imagenet",
+            in_channels=num_channels,     
+            classes=CFG.num_class+1,
+            activation=CFG.activation)
+    model = Meta_Seg(in_channels=num_channels, seg_model=seg_model, n_labels=CFG.num_class+1, n_meta_features=CFG.n_meta_features).to(CFG.device)
+elif CFG.seg_model_name == "UNetPlusPlus":
+    model = smp.UnetPlusPlus(
+            encoder_name=CFG.encoder_name,      
+            encoder_weights="imagenet",
+            in_channels=num_channels,     
+            classes=CFG.num_class+1,
+            activation=CFG.activation).to(CFG.device)
+    
 print(count_parameters(model))
 
 
@@ -340,7 +360,7 @@ LovaszLoss  = smp.losses.LovaszLoss(mode='multiclass', per_image=False)
 
 # %%
 loss_fn = TverskyLoss
-CFG.init_lr = 0.0001
+CFG.init_lr = CFG.init_lr
 # optimizer = optim.Adam(model.parameters(), lr=CFG.init_lr)
 optimizer = optim.AdamW(model.parameters(), lr=CFG.init_lr)
 # # learning rate scheduler
@@ -414,9 +434,11 @@ def train_epoch(trainloader, model):
             inputs[:, bbx1:bbx2, bby1:bby2, :] = inputs[rand_index, bbx1:bbx2, bby1:bby2, :]
             targets[:, bbx1:bbx2, bby1:bby2] = targets[rand_index, bbx1:bbx2, bby1:bby2]
         
-        outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device), metas.float().to(CFG.device))
-        # if CFG.seg_model_name == 'segformer':        
-        #     outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
+        if CFG.seg_model_name == 'FiLMedUnet' or CFG.seg_model_name == 'metaseg':
+            outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device), metas.float().to(CFG.device))
+        else:
+            outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device))
+        
         targets = targets.long().to(CFG.device)
         # calculate loss
         loss = loss_fn(outputs, targets)
@@ -435,10 +457,12 @@ def evaluate_epoch(validloader, model):
     model.eval()
     scores = []
     loss = []
-    for (inputs, targets, metas, label, _) in tqdm(validloader):
-        outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device), metas.float().to(CFG.device)).detach().cpu() #channel first
-        # if CFG.seg_model_name == 'segformer':        
-        #     outputs = F.interpolate(outputs, (320, 320), mode = 'bilinear')
+    for (inputs, targets, metas, label, _) in tqdm(validloader):    
+        if CFG.seg_model_name == 'FiLMedUnet' or CFG.seg_model_name == 'metaseg':
+            outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device), metas.float().to(CFG.device))
+        else:
+            outputs = model.forward(inputs.permute(0,-1,1,2).to(CFG.device))
+        outputs = outputs.detach().cpu()
         targets = targets.long()
         # calculate loss
         val_loss = loss_fn(outputs, targets)
@@ -471,8 +495,8 @@ train_val_df = label_df
 # %%
 # Train Once
 train_val_df = train_val_df[~train_val_df['mode'].isin(['test'])]
-train_df = train_val_df[train_val_df['mode'] == 'train']
-val_df = train_val_df[train_val_df['mode'] == 'valid']
+train_df = train_val_df[train_val_df['mode'] == 'train'][:100]
+val_df = train_val_df[train_val_df['mode'] == 'valid'][:20]
 
 train_dataset = FOREST(train_df, mode = "train")
 valid_dataset = FOREST(val_df, mode = "valid")

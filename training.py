@@ -75,14 +75,14 @@ class CFG:
     label_file      = "./dataset/processed/label.csv"
 
     encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    seg_model_name = 'unetsegformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
-    cutmix         = False
+    cutmix         = False # failed
     use_vi_inf     = True
     img_size       = 320
-    scheduler      = "ReduceLROnPlateau" #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
-    epochs         = 10
+    scheduler      = None #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
+    epochs         = 12
     init_lr        = 0.0001
     min_lr         = 1e-6
     T_0            = 9
@@ -102,7 +102,7 @@ class CFG:
     save_folder    = f'results/{seg_model_name}_weights_{str(datetime.now().strftime("%m_%d_%Y-%H:%M:%S"))}/'
     save_weight_path     =  f'weights_{seg_model_name}_{num_inputs}_images_{use_meta}_meta.pth'
 
-    device         = torch.device('cuda:6' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -118,10 +118,12 @@ def Augment(mode):
         train_aug_list = [ 
                         #   A.RandomScale(scale_limit=(1.2, 1.5), p=0.5), 
                           A.CenterCrop(CFG.img_size, CFG.img_size, p=1.0),
-                          A.RandomRotate90(p=0.2),
+                          A.RandomRotate90(p=0.2), #0.75 fails
                           A.HorizontalFlip(p=0.5),
                           A.VerticalFlip(p=0.5),
-                        
+                          
+                        #   A.ChannelDropout(channel_drop_range=(1,2), p=0.2),
+
                           A.ShiftScaleRotate(shift_limit=0, scale_limit=(-0.2,0.2), rotate_limit=(-30,30), 
                          interpolation=1, border_mode=0, value=(0,0,0), p=0.2), #
                           A.OneOf([ #
@@ -133,7 +135,7 @@ def Augment(mode):
                           A.HueSaturationValue(hue_shift_limit=30, sat_shift_limit=30, 
                            val_shift_limit=0, p=0.5),
 
-                        #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), #
+                        #   A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.1), #
                         #   A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=1.0),
                         #   A.Cutout(max_h_size=20, max_w_size=20, num_holes=8, p=0.2),
                           A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # default imagenet mean & std.
@@ -323,10 +325,14 @@ elif CFG.seg_model_name == "UNet":
 elif CFG.seg_model_name == "UNetPlusPlus":
     model = smp.UnetPlusPlus(
             encoder_name=CFG.encoder_name,      
-            encoder_weights="imagenet",
+            encoder_weights= 'imagenet',
             in_channels=num_channels,     
             classes=CFG.num_class+1,
             activation=CFG.activation).to(CFG.device)
+elif CFG.seg_model_name == 'unetsegformer':
+    from single_models.unet_segformer import UNET_Segformer
+    model = UNET_Segformer(in_channels=num_channels, num_classes=CFG.num_class+1).to(CFG.device)
+    
 
 # model.load_state_dict(torch.load("./results/segformer_weights_06_28_2023-13:13:38/-1_0.363_weights_segformer_2_images_False_meta.pth"))
 print(count_parameters(model))
@@ -545,7 +551,7 @@ valid_loader = DataLoader(valid_dataset,
 
 
 if not CFG.train_kfold:
-    model = train(train_loader, valid_loader, model, fold=-1, n_epoch = 20)
+    model = train(train_loader, valid_loader, model, fold=-1, n_epoch = CFG.epochs)
 
 
 #%%
@@ -577,7 +583,7 @@ if CFG.train_kfold:
                                     pin_memory=False)
         
         model = train(train_loader, valid_loader, model, fold=fold,
-                n_epoch = 12)
+                n_epoch = CFG.epochs)
         
         print(f'Finish fold {fold}: Train size={len(train_df)}, Test size={len(val_df)}')
 

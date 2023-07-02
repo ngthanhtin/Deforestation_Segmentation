@@ -185,9 +185,14 @@ class FOREST(Dataset):
         case_id, deforestation_type, lat, long, year, mode, data_path = self.label_df.iloc[index].to_list()
         
         # load image and mask
-        visible  = cv2.imread(data_path + '/processed/visibles/'  + str(case_id) + "/composite.png")
-        infrared = cv2.imread(data_path + '/processed/infrareds/' + str(case_id) + "/composite.png")
-        mask     = cv2.imread(data_path + '/processed/masks/'     + str(case_id) + ".png", 0) if (self.mode != "test") else np.zeros(visible.shape[:2]) # dummy mask for test-set case.
+        if isinstance(case_id, str):
+            visible  = cv2.imread(data_path + '/' + str(case_id) + "/images/visible/composite.png")
+            infrared = np.load(data_path + '/' + str(case_id) + "/images/infrared/composite.npy").astype(np.uint8)
+            mask     = cv2.imread(data_path + '/' + str(case_id) + "/mask.png", 0) if (self.mode != "test") else np.zeros(visible.shape[:2]) # dummy mask for test-set case.
+        else:
+            visible  = cv2.imread(data_path + '/processed/visibles/'  + str(case_id) + "/composite.png")
+            infrared = cv2.imread(data_path + '/processed/infrareds/' + str(case_id) + "/composite.png")
+            mask     = cv2.imread(data_path + '/processed/masks/'     + str(case_id) + ".png", 0) if (self.mode != "test") else np.zeros(visible.shape[:2]) # dummy mask for test-set case.
         
         # convert the foreground region in the mask to the corressponding label integer
         label = self.mask_dict[deforestation_type]
@@ -211,7 +216,7 @@ class FOREST(Dataset):
 
             image = visible
         
-        return torch.tensor(image), torch.tensor(mask), label, case_id
+        return torch.tensor(image), torch.tensor(mask), label, str(case_id)
 
 # %%
 def show_image(image,
@@ -522,17 +527,26 @@ print(f"Size of original df: {len(label_df)}")
 print(label_df.head(5))
 train_val_df = label_df
 # %%
-# generated_label_file = "./generated_dataset_2/processed/new_label.csv"
-# generated_label_df   = pd.read_csv(generated_label_file, index_col=0)
-# generated_label_df['data_folder'] = ['./generated_dataset_2']*len(generated_label_df)
-# print(generated_label_df.head(5))
-# print(f"Size of generated df: {len(generated_label_df)}")
+generated_label_file = "./dataset/add_label.csv"
+generated_label_df   = pd.read_csv(generated_label_file)
+generated_label_df['data_folder'] = ['./deep/downloads/ForestNetDataset/examples']*len(generated_label_df)
+generated_label_df.insert(loc=5, column='mode', value=['train' for _ in range(len(generated_label_df))])
+columns = generated_label_df.columns.tolist()
+col_to_move = generated_label_df.pop('id')
+generated_label_df.insert(0, 'id', col_to_move)
+print(generated_label_df.head(5))
+print(f"Size of generated df: {len(generated_label_df)}")
 
-# # combine them together
-# label_df = pd.concat([label_df.reset_index(drop=True), generated_label_df.reset_index(drop=True)])#.reset_index(drop=True)
-# print(f"Size of combined df: {len(label_df)}")
-# label_df.head(5)
+# %%
+# combine them together
+label_df = pd.concat([label_df.reset_index(drop=True), generated_label_df.reset_index(drop=True)])#.reset_index(drop=True)
+print(f"Size of combined df: {len(label_df)}")
+print(len(label_df))
+train_val_df = label_df
+label_df.tail(5)
 
+label_list = set(train_val_df.merged_label.values.tolist())
+label_list
 # %%
 # Train Once
 train_val_df = train_val_df[~train_val_df['mode'].isin(['test'])]

@@ -11,3 +11,5 @@ copy_paste_aug_repo/
 mmsegmentation/
 results/
 segformer_checkpoints/
+ForestNetDataset.zip
+deep/

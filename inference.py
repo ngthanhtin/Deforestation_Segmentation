@@ -57,7 +57,7 @@ class CFG:
     label_file      = "./dataset/processed/label_remove_small_pixels.csv"
 
     encoder_name   = 'tu-eca_nfnet_l1' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'UNetPlusPlus' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
     ensemble       = False
@@ -77,9 +77,9 @@ class CFG:
     num_inputs     = 2 if use_vi_inf else 1
     use_meta       = False
 
-    load_weight_folder = 'results/UNetPlusPlus_weights_07_01_2023-20:39:50/'
-    specific_weight_file = '-1_0.324_weights_UNetPlusPlus_2_images_False_meta.pth'
-    device         = torch.device('cuda:6' if torch.cuda.is_available() else 'cpu')
+    load_weight_folder = 'results/segformer_weights_07_02_2023-06:57:15/'
+    specific_weight_file = '-1_0.332_weights_segformer_2_images_False_meta.pth'
+    device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
     submission     = True
     visualize      = False
     eval           = False

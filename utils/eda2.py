@@ -77,18 +77,6 @@ test_path = [os.path.join(root_folder, p) for p in test_image_names]
 len(train_path), len(valid_path), len(test_path), train_path[:2]
 
 # %%
-infrared_path = '../deep/downloads/ForestNetDataset/examples/-0.002226324002905_109.97159881327198/images/infrared/composite.npy'
-visible_path = '../deep/downloads/ForestNetDataset/examples/-0.002226324002905_109.97159881327198/images/visible/composite.png'
-mask_path = '../deep/downloads/ForestNetDataset/examples/-2.248346072674411_104.1357857482906/forest_loss_region.pkl'
-
-# %%
-np.load(infrared_path).shape
-
-with open(mask_path, 'rb') as f:
-    mask = pickle.load(f)
-
-mask
-# %%
 import pickle
 import shapely
 from shapely.geometry import shape
@@ -162,6 +150,11 @@ for val_image_path in valid_path:
     cv2.imwrite(os.path.join(val_image_path, 'mask.png'), np_mask)
 
 # %%
+for test_image_path in test_path:
+    pkl_mask = test_image_path + '/forest_loss_region.pkl'
+    np_mask, geo_type = read_mask(pkl_mask)
+    cv2.imwrite(os.path.join(test_image_path, 'mask.png'), np_mask)
+# %%
 train_df = train_df.drop('label', axis=1)
 train_df.head(4)
 # %%
@@ -185,38 +178,24 @@ valid_df.head(5)
 # %%
 valid_df = valid_df.rename(columns={'example_path': 'id'})
 valid_df.head(5) 
+# %% test df
+test_df = test_df.drop('label', axis=1)
+test_df.head(4)
+# %%
+test_df['example_path'] = test_df['example_path'].str.replace('examples/', '')
+test_df.head(5) 
+# %%
+test_df['merged_label'] = test_df['merged_label'].str.lower()
+test_df.head(5) 
+# %%
+test_df = test_df.rename(columns={'example_path': 'id'})
+test_df.head(5) 
+# %%
 
 # %%
-combined_df = pd.concat([train_df, valid_df], axis=0)
+combined_df = pd.concat([train_df, valid_df, test_df], axis=0)
 combined_df.head(4)
 len(combined_df)
 # %%
-combined_df.to_csv('add_label.csv', index=False)
-
-# %%
-import pandas as pd
-df = pd.read_csv('/home/tin/projects/deforestation/Indonesia_Deforestation_Segmentation/dataset/processed/label.csv')
-df.head(5)
-# %%
-value = df.loc[1]['id']
-type(value)
-# %% --check image
-import os
-import cv2
-import numpy as np
-import pandas as pd
-path = '/home/tin/projects/deforestation/Indonesia_Deforestation_Segmentation/deep/downloads/ForestNetDataset/examples/'
-folders = os.listdir(path)
-df = pd.read_csv('/home/tin/projects/deforestation/Indonesia_Deforestation_Segmentation/dataset/add_label.csv')
-
-ids = list(df['id'])
-# %%
-folders = [os.path.join(path, id) for id in ids]
-
-for f in folders:
-    visible = cv2.imread(os.path.join(f, 'images/visible/composite.png'))
-    infrared = np.load(os.path.join(f, 'images/infrared/composite.npy'))    
-    mask = cv2.imread(os.path.join(f, 'mask.png'), 0)
-    print(mask.shape)
-    print(type(visible))
+combined_df.to_csv('add_label_v2.csv', index=False)
 # %%

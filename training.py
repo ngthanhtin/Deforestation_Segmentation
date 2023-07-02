@@ -73,16 +73,19 @@ class CFG:
     infrared_folder = "./dataset/processed/infrareds/"
     mask_folder     = "./dataset/processed/masks/"
     label_file      = "./dataset/processed/label.csv"
+    # additional data path 
+    additional_label_file = './dataset/add_label_v2.csv' # None
 
     encoder_name   = 'tu-eca_nfnet_l1' # timm-efficientnet-b5, tu-eca_nfnet_l1, se-resnext, resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
+    encoder_weights = 'noisy-student' # imagenet
     seg_model_name = 'UNetPlusPlus' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
-
+    
     cutmix         = False # failed
     use_vi_inf     = True
     img_size       = 320
     scheduler      = None #"CosineAnnealingLR" #"ReduceLROnPlateau" #'CosineAnnealingWarmRestarts'
-    epochs         = 12
+    epochs         = 30
     init_lr        = 0.0001
     min_lr         = 1e-6
     T_0            = 9
@@ -102,7 +105,7 @@ class CFG:
     save_folder    = f'results/{seg_model_name}_weights_{str(datetime.now().strftime("%m_%d_%Y-%H:%M:%S"))}/'
     save_weight_path     =  f'weights_{seg_model_name}_{num_inputs}_images_{use_meta}_meta.pth'
 
-    device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -328,20 +331,17 @@ if CFG.seg_model_name == 'segformer':
     model.init_weights()
 elif CFG.seg_model_name == "UNet":
     model = smp.Unet(encoder_name    = CFG.encoder_name,
-                    encoder_weights = "imagenet",
+                    encoder_weights = CFG.encoder_weights,
                     in_channels     = num_channels,
                     classes         = CFG.num_class+1,
                     activation=CFG.activation).to(CFG.device)
 elif CFG.seg_model_name == "UNetPlusPlus":
     model = smp.UnetPlusPlus(
             encoder_name=CFG.encoder_name,      
-            encoder_weights= 'noisy-student',#'noisy-student',
+            encoder_weights= CFG.encoder_weights,#'noisy-student',
             in_channels=num_channels,     
             classes=CFG.num_class+1,
             activation=CFG.activation).to(CFG.device)
-elif CFG.seg_model_name == 'unetsegformer':
-    from single_models.unet_segformer import UNET_Segformer
-    model = UNET_Segformer(in_channels=num_channels, num_classes=CFG.num_class+1).to(CFG.device)
     
 
 # model.load_state_dict(torch.load("./results/segformer_weights_06_28_2023-13:13:38/-1_0.363_weights_segformer_2_images_False_meta.pth"))
@@ -526,25 +526,25 @@ label_df['data_folder'] = ['./dataset']*len(label_df)
 print(f"Size of original df: {len(label_df)}")
 print(label_df.head(5))
 train_val_df = label_df
-# %%
-generated_label_file = "./dataset/add_label.csv"
-generated_label_df   = pd.read_csv(generated_label_file)
-generated_label_df['data_folder'] = ['./deep/downloads/ForestNetDataset/examples']*len(generated_label_df)
-generated_label_df.insert(loc=5, column='mode', value=['train' for _ in range(len(generated_label_df))])
-columns = generated_label_df.columns.tolist()
-col_to_move = generated_label_df.pop('id')
-generated_label_df.insert(0, 'id', col_to_move)
-print(generated_label_df.head(5))
-print(f"Size of generated df: {len(generated_label_df)}")
+# %% addtional data
+if CFG.additional_label_file:
+    print('Use additional data...')
+    generated_label_file = CFG.additional_label_file
+    generated_label_df   = pd.read_csv(generated_label_file)
+    generated_label_df['data_folder'] = ['./deep/downloads/ForestNetDataset/examples']*len(generated_label_df)
+    generated_label_df.insert(loc=5, column='mode', value=['train' for _ in range(len(generated_label_df))])
+    columns = generated_label_df.columns.tolist()
+    col_to_move = generated_label_df.pop('id')
+    generated_label_df.insert(0, 'id', col_to_move)
+    print(generated_label_df.head(5))
+    print(f"Size of generated df: {len(generated_label_df)}")
+    # combine them together
+    label_df = pd.concat([label_df.reset_index(drop=True), generated_label_df.reset_index(drop=True)])#.reset_index(drop=True)
+    print(f"Size of combined df: {len(label_df)}")
+    train_val_df = label_df
+    label_df.tail(5)
 
 # %%
-# combine them together
-label_df = pd.concat([label_df.reset_index(drop=True), generated_label_df.reset_index(drop=True)])#.reset_index(drop=True)
-print(f"Size of combined df: {len(label_df)}")
-print(len(label_df))
-train_val_df = label_df
-label_df.tail(5)
-
 label_list = set(train_val_df.merged_label.values.tolist())
 label_list
 # %%

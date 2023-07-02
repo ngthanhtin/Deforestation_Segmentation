@@ -56,8 +56,8 @@ class CFG:
     mask_folder     = "./dataset/processed/masks/"
     label_file      = "./dataset/processed/label_remove_small_pixels.csv"
 
-    encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'segformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    encoder_name   = 'tu-eca_nfnet_l1' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
+    seg_model_name = 'UNetPlusPlus' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
     ensemble       = False
@@ -77,8 +77,8 @@ class CFG:
     num_inputs     = 2 if use_vi_inf else 1
     use_meta       = False
 
-    load_weight_folder = 'results/segformer_weights_06_30_2023-01:08:31/'
-    specific_weight_file = '-1_0.340_weights_segformer_2_images_False_meta.pth'
+    load_weight_folder = 'results/UNetPlusPlus_weights_07_01_2023-20:39:50/'
+    specific_weight_file = '-1_0.324_weights_UNetPlusPlus_2_images_False_meta.pth'
     device         = torch.device('cuda:6' if torch.cuda.is_available() else 'cpu')
     submission     = True
     visualize      = False
@@ -219,7 +219,7 @@ def build_model(CFG, model_name):
     elif model_name == "UNetPlusPlus":
         model = smp.UnetPlusPlus(
                 encoder_name=CFG.encoder_name,      
-                encoder_weights="imagenet",
+                encoder_weights="ssl",
                 in_channels=num_channels,     
                 classes=CFG.num_class+1,
                 activation=CFG.activation).to(CFG.device)
@@ -239,7 +239,7 @@ rotate_acw = A.Rotate(limit = (90, 90), p = 1.0)
 # Pixel level transformations
 pixel_level_trfms = A.OneOf([
                     A.HueSaturationValue(10,15,10),
-                    A.CLAHE(clip_limit=2),
+                    # A.CLAHE(clip_limit=2),
                     A.RandomBrightnessContrast(),            
                    ], p = 1.0)
 
@@ -247,13 +247,13 @@ pixel_level_trfms = A.OneOf([
 tta_augs = [identity_trfm,
             horizontal_flip,
             vertical_flip,
-            rotate_cw]
+            rotate_cw, pixel_level_trfms]
 
 # List of deaugmentations corresponding to the above aug list
 tta_deaugs = [None,
               horizontal_flip,
               vertical_flip,
-              rotate_acw]
+              rotate_acw, None]
 # %%
 class EnsembleModel(nn.Module):
     def __init__(self, model_names, model_paths):
@@ -375,7 +375,12 @@ def evaluate_epoch(validloader, model):
             
             for j, tta_aug in enumerate(tta_augs):
                 # Augmentation    
-                aug_img = tta_aug(image = inputs)['image']
+                if j == len(tta_augs) - 1:
+                    aug_img1 = tta_aug(image = inputs[:, :, :3])['image']
+                    aug_img2 = tta_aug(image = inputs[:, :, 3:])['image']
+                    aug_img = np.concatenate((aug_img1, aug_img2), axis = -1)
+                else:
+                    aug_img = tta_aug(image = inputs)['image']
                 aug_img = torch.tensor(aug_img)
                 aug_img = aug_img.unsqueeze(0)
 
@@ -489,7 +494,13 @@ def predict(model, loader):
             
             for j, tta_aug in enumerate(tta_augs):
                 # Augmentation    
-                aug_img = tta_aug(image = inputs)['image']
+                if j == len(tta_augs) - 1:
+                    aug_img1 = tta_aug(image = inputs[:, :, :3])['image']
+                    aug_img2 = tta_aug(image = inputs[:, :, 3:])['image']
+                    aug_img = np.concatenate((aug_img1, aug_img2), axis = -1)
+                else:
+                    aug_img = tta_aug(image = inputs)['image']
+                
                 aug_img = torch.tensor(aug_img)
                 aug_img = aug_img.unsqueeze(0)
 

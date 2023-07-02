@@ -74,8 +74,8 @@ class CFG:
     mask_folder     = "./dataset/processed/masks/"
     label_file      = "./dataset/processed/label.csv"
 
-    encoder_name   = 'resnet101' # resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
-    seg_model_name = 'unetsegformer' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
+    encoder_name   = 'tu-eca_nfnet_l1' # timm-efficientnet-b5, tu-eca_nfnet_l1, se-resnext, resnet101, efficientnet-b6, timm-regnety_008, timm-regnety_120
+    seg_model_name = 'UNetPlusPlus' # segformer, UNetPlusPlus, UIUNet, UNet, PAN, NestedUNet, DeepLabV3Plus
     activation     = None #softmax2d, sigmoid, softmax
 
     cutmix         = False # failed
@@ -102,7 +102,7 @@ class CFG:
     save_folder    = f'results/{seg_model_name}_weights_{str(datetime.now().strftime("%m_%d_%Y-%H:%M:%S"))}/'
     save_weight_path     =  f'weights_{seg_model_name}_{num_inputs}_images_{use_meta}_meta.pth'
 
-    device         = torch.device('cuda:7' if torch.cuda.is_available() else 'cpu')
+    device         = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
 
 set_seed(CFG.seed)
 if not os.path.exists(CFG.save_folder):
@@ -123,6 +123,8 @@ def Augment(mode):
                           A.VerticalFlip(p=0.5),
                           
                         #   A.ChannelDropout(channel_drop_range=(1,2), p=0.2),
+                        #   A.ChannelShuffle(p=0.3),
+                        #   A.ColorJitter(p=0.3),
 
                           A.ShiftScaleRotate(shift_limit=0, scale_limit=(-0.2,0.2), rotate_limit=(-30,30), 
                          interpolation=1, border_mode=0, value=(0,0,0), p=0.2), #
@@ -194,9 +196,12 @@ class FOREST(Dataset):
         
         if CFG.use_vi_inf:
             # visible, infrared, mask, _, _, _, _
+            # if label == 2 or label == 4:
             visible, infrared, mask = self.augment(image  = visible,
-                                                image2 = infrared, mask=mask).values()
-
+                                                    image2 = infrared, mask=mask).values()
+            # else:
+            #     visible, infrared, mask = self.augment2(image  = visible,
+            #                                         image2 = infrared, mask=mask).values()
             image = np.concatenate((visible, infrared), axis = -1)
         else:
             
@@ -325,7 +330,7 @@ elif CFG.seg_model_name == "UNet":
 elif CFG.seg_model_name == "UNetPlusPlus":
     model = smp.UnetPlusPlus(
             encoder_name=CFG.encoder_name,      
-            encoder_weights= 'imagenet',
+            encoder_weights= 'noisy-student',#'noisy-student',
             in_channels=num_channels,     
             classes=CFG.num_class+1,
             activation=CFG.activation).to(CFG.device)

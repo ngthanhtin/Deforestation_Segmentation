@@ -10,12 +10,33 @@ The additional data contain the mask as `forest_loss_region.pkl` files, so I pro
 You can find the pretrained model here: [link](https://drive.google.com/drive/folders/12HQBT4S2-dOSrLTwbLfwjVbIF15c8mBo?usp=sharing)
 
 ## Model Used in the Challenge
-I used UNetPlusPlus with NFNet backbone.
+I used UNetPlusPlus with NFNet backbone, and I used visible and infrared images as the inputs.
 
-## TODO
-1. Heavy TTA. (zoom-in, rotation more)
-2. Cutmix.
-3. Postprocess (Morphology, Connected Components)
+## How to Run
+For training:
+```
+python training.py
+```
+For validation:
+```
+python inference.py
+```
+
+## Technique
+[x] UNetPlusPlus (and other models you can find in my code) <br>
+[x] TTA (geometric and pixel level TTAs) <br>
+[x] Ensemble (In the scope of this competition, I did not use ensemble but I have included the ensemble code in my code) <br>
+[x] Models using auxilary information (latitude, longtitude, year) <br>
+[x] Use SegFormer to finetune <br>
+[x] Cutmix <br>
+[x] Mixup without hesitation <br>
+[x] KFold training <br>
+
+
+## Further Improvement
+[] Heavy TTA. (zoom-in, rotation more) <br>
+[x] Postprocess (Morphology, Connected Components) <br>
+[] Use SAM to finetune the model <br>
 
 
 ## Reference

@@ -1,4 +1,5 @@
 # Indonesia Deforestation Segmentation
+![0](./readme_imgs/lb.png) <br>
 `Top 1 solution` for Indonesia Deforestation Segmentation Challenge. `(0.379 Dice Score on LB)` <br>
 ![1](./readme_imgs/output.png) ![2](./readme_imgs/output2.png)
 ## Additional Data link
